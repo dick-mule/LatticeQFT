@@ -23,6 +23,7 @@
 #include "monte_carlo/hmc.hpp"
 #include "monte_carlo/metropolis.hpp"
 #include "monte_carlo/schwinger_hmc.hpp"
+#include "observables/meson_correlators.hpp"
 #include "monte_carlo/su2_heatbath.hpp"
 #include "monte_carlo/tuning.hpp"
 #include "monte_carlo/u1_heatbath.hpp"
@@ -34,6 +35,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <fstream>
+#include <vector>
 
 namespace
 {
@@ -75,6 +78,10 @@ struct Cli
     // HMC knobs (used by schwinger-hmc)
     double hmc_dt         = 0.04;
     int    hmc_n_steps    = 20;
+
+    // Meson correlators (schwinger-hmc): exact dense propagator per sample, time-sliced
+    // pseudoscalar correlators (connected, disconnected, singlet) appended to this CSV.
+    std::string corr_out;
 
     // Use U(1) heat-bath sweep instead of Metropolis (--model u1 / schwinger-quenched)
     bool   use_heatbath   = false;
@@ -156,6 +163,7 @@ bool parseCli(int argc, char** argv, Cli& cli)
         else if (a == "--hmc-dt")         { if (!need (cli.hmc_dt))          return false; }
         else if (a == "--hmc-n-steps")    { if (!needI(cli.hmc_n_steps))     return false; }
         else if (a == "--use-heatbath")   { cli.use_heatbath = true; }
+        else if (a == "--corr-out")       { if (i + 1 >= argc) return false; cli.corr_out = argv[++i]; }
         else { std::fprintf(stderr, "unknown arg: %s\n", a.c_str()); return false; }
     }
     return true;
@@ -631,6 +639,9 @@ int runSchwingerHMC(const Cli& cli)
         H.resetCounters();
 
         obs::Mean plaq, condensate, dH;
+        // Meson correlators: per-sample time slices, accumulated as mean and naive error.
+        const int Lt = cli.L;
+        std::vector<obs::Mean> cConn(static_cast<std::size_t>(Lt)), cDisc(static_cast<std::size_t>(Lt)), cEta(static_cast<std::size_t>(Lt));
         for (int t = 0; t < cli.measure_sweeps; ++t)
         {
             provider.refreshPseudofermion(U, rng);
@@ -642,7 +653,30 @@ int runSchwingerHMC(const Cli& cli)
                 const auto c = obs::stochasticCondensate(
                     D, U, lattice, rng, cli.n_sources, cli.cg_tol, cli.cg_max_iters);
                 condensate.add(c.mean);
+                if (!cli.corr_out.empty())
+                {
+                    const auto S  = obs::densePropagator(D, U, lattice);
+                    const auto Cm = obs::mesonCorrelators(S, lattice);
+                    for (int tt = 0; tt < Lt; ++tt)
+                    {
+                        cConn[static_cast<std::size_t>(tt)].add(Cm.conn[static_cast<std::size_t>(tt)]);
+                        cDisc[static_cast<std::size_t>(tt)].add(Cm.disc[static_cast<std::size_t>(tt)]);
+                        cEta [static_cast<std::size_t>(tt)].add(Cm.eta [static_cast<std::size_t>(tt)]);
+                    }
+                }
             }
+        }
+        if (!cli.corr_out.empty())
+        {
+            const bool fresh = !std::ifstream(cli.corr_out).good();
+            std::ofstream f(cli.corr_out, std::ios::app);
+            if (fresh) f << "beta,mass,L,t,conn,conn_err,disc,disc_err,eta,eta_err,n_samples\n";
+            for (int tt = 0; tt < Lt; ++tt)
+                f << beta << "," << cli.mass << "," << cli.L << "," << tt << ","
+                  << cConn[static_cast<std::size_t>(tt)].mean() << "," << cConn[static_cast<std::size_t>(tt)].naiveStdErr() << ","
+                  << cDisc[static_cast<std::size_t>(tt)].mean() << "," << cDisc[static_cast<std::size_t>(tt)].naiveStdErr() << ","
+                  << cEta [static_cast<std::size_t>(tt)].mean() << "," << cEta [static_cast<std::size_t>(tt)].naiveStdErr() << ","
+                  << cConn[0].count() << "\n";
         }
 
         std::printf("%.5f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f\n",

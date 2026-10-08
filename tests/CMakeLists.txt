@@ -16,6 +16,7 @@ add_executable(LatticeQFTTests
     test_su3.cpp
     test_stout.cpp
     test_multilevel.cpp
+    test_mesons.cpp
 )
 
 target_link_libraries(LatticeQFTTests PRIVATE
