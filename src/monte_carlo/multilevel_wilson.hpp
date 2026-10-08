@@ -191,10 +191,16 @@ void slabSweep(const su2_model::SU2Model<Dim>& model,
 
         for (int mu = 0; mu < Dim; ++mu)
         {
-            // Spatial links at the frozen boundary t-slices are skipped.
+            // Spatial links are updated only strictly INSIDE the slab: the boundary
+            // slices t_lo and t_hi are frozen, and slices outside the slab belong to
+            // other slabs (or to the closing lines). The old test `t == t_lo || t == t_hi`
+            // skipped just the two boundary slices and so updated spatial links
+            // everywhere else - slab 1's sub-MC then moved the z = 0 closing line that
+            // slab 0's tensor had been conditioned on, which breaks the conditional
+            // independence the method rests on (a 27% low bias on <W(2,2)> at beta = 5).
             if (mu != t_axis)
             {
-                if (t == t_lo || t == t_hi) continue;
+                if (t <= t_lo || t >= t_hi) continue;
             }
             // Temporal link U_z(s) connects t and t+1. It lives inside the
             // slab [t_lo, t_hi) iff t ∈ [t_lo, t_hi). The link out of the

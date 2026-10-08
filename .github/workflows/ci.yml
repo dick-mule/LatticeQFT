@@ -1,0 +1,18 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  cpu-core:
+    # The header-only core, the CLI driver and the GoogleTest suite (94 tests: Onsager point,
+    # U(1) Bessel ratio, gauge invariance, Dirac/CG/deflation, HMC reversibility, SU(2)/SU(3)
+    # algebra, multilevel). The Vulkan visualizer needs a GPU and is built locally only.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: deps
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+      - name: configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_VISUALIZER=OFF
+      - name: build
+        run: cmake --build build
+      - name: test
+        run: cd build && ctest --output-on-failure
