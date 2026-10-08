@@ -1,0 +1,211 @@
+#version 450
+
+// SU(2) Metropolis sweep — one thread per link.
+//
+// Dispatch convention: one dispatch per color (parity, μ). Threads check
+// (site parity, μ) against the push constant; non-matching threads return.
+// For full parallel safety on GPU we use V threads per dispatch (the
+// non-matching threads are cheap).
+//
+// Per-site xoshiro128++ RNG state lives in the second SSBO. The state is
+// XORed with the sweep counter on entry so successive sweeps see different
+// streams without re-uploading from the CPU.
+//
+// Algorithm at each link (site, μ):
+//   1. Read U_old and the staple A from the 2(Dim − 1) plaquettes the
+//      link participates in.
+//   2. Sample θ ∼ N(0, σ²·I)³ on the Lie algebra; form ΔU = exp(i θ·σ/2).
+//   3. Propose U_new = ΔU · U_old.
+//   4. ΔS = -(β/2) · [Re tr(U_new · A) − Re tr(U_old · A)].
+//   5. Accept with probability min(1, exp(-ΔS)). On accept, write U_new.
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) buffer GaugeField
+{
+    vec4 U[]; // length V · Dim; SU(2) link as (s, v0, v1, v2)
+};
+
+layout(set = 0, binding = 1, std430) buffer RngStates
+{
+    uvec4 state[]; // length V; xoshiro128++ per site
+};
+
+layout(push_constant) uniform PC
+{
+    int   Lx;
+    int   Ly;
+    int   Lz;
+    int   Dim;
+    int   color_parity;
+    int   color_mu;
+    float beta;
+    float step_size;
+    int   sweep_count;
+} pc;
+
+// ---------------------------------------------------------------------------
+// xoshiro128++ — fast, well-tested 32-bit PRNG. 128 bits of state per stream.
+// ---------------------------------------------------------------------------
+
+uint rotl32(uint x, uint k)
+{
+    return (x << k) | (x >> (32u - k));
+}
+
+uint xoshiro_next(inout uvec4 s)
+{
+    uint result = rotl32(s.x + s.w, 7u) + s.x;
+    uint t      = s.y << 9u;
+    s.z ^= s.x;
+    s.w ^= s.y;
+    s.y ^= s.z;
+    s.x ^= s.w;
+    s.z ^= t;
+    s.w  = rotl32(s.w, 11u);
+    return result;
+}
+
+float uniform01(inout uvec4 s)
+{
+    // 24 high bits → [0, 1).
+    return float(xoshiro_next(s) >> 8) * (1.0 / 16777216.0);
+}
+
+float normal01(inout uvec4 s)
+{
+    // Box-Muller with one rejected u1 = 0 corner.
+    float u1 = max(uniform01(s), 1e-20);
+    float u2 = uniform01(s);
+    return sqrt(-2.0 * log(u1)) * cos(6.28318530717958647692 * u2);
+}
+
+// ---------------------------------------------------------------------------
+// SU(2) algebra (matches `src/math/su2.hpp` 4-vector representation).
+// ---------------------------------------------------------------------------
+
+vec4 su2_mult(vec4 a, vec4 b)
+{
+    vec3 av = a.yzw;
+    vec3 bv = b.yzw;
+    return vec4(
+        a.x * b.x - dot(av, bv),
+        a.x * bv + b.x * av - cross(av, bv)
+    );
+}
+
+vec4 su2_dagger(vec4 a) { return vec4(a.x, -a.yzw); }
+
+float real_trace_product(vec4 a, vec4 b)
+{
+    return 2.0 * (a.x * b.x - dot(a.yzw, b.yzw));
+}
+
+vec4 random_near_identity(inout uvec4 s, float sigma)
+{
+    float t0  = sigma * normal01(s);
+    float t1  = sigma * normal01(s);
+    float t2  = sigma * normal01(s);
+    float mag = sqrt(t0 * t0 + t1 * t1 + t2 * t2);
+    if (mag < 1e-12) return vec4(1.0, 0.0, 0.0, 0.0);
+    float theta_half = 0.5 * mag;
+    float c          = cos(theta_half);
+    float k          = sin(theta_half) / mag;
+    return vec4(c, k * t0, k * t1, k * t2);
+}
+
+// ---------------------------------------------------------------------------
+// Site indexing helpers.
+// ---------------------------------------------------------------------------
+
+int siteIdx(int x, int y, int z)
+{
+    return (z * pc.Ly + y) * pc.Lx + x;
+}
+
+int wrap(int v, int L) { return (v + L) % L; }
+
+vec4 readLink(int site, int mu) { return U[site * pc.Dim + mu]; }
+void writeLink(int site, int mu, vec4 v) { U[site * pc.Dim + mu] = v; }
+
+// Sum of 2(Dim − 1) staple matrices. Same formula as the CPU code in
+// `src/models/su2.hpp::SU2Model::staple`.
+vec4 computeStaple(int site, int mu, int x, int y, int z)
+{
+    vec4 total = vec4(0.0);
+    int  shape[3] = int[3](pc.Lx, pc.Ly, pc.Lz);
+
+    for (int nu = 0; nu < pc.Dim; ++nu)
+    {
+        if (nu == mu) continue;
+
+        // Compute neighbor coordinates in mu, nu.
+        int xp[3] = int[3](x, y, z);
+        int xn[3] = int[3](x, y, z);
+        int xpm[3] = int[3](x, y, z);
+        xp[mu]    = wrap(xp[mu]  + 1, shape[mu]);
+        xpm[mu]   = wrap(xpm[mu] + 1, shape[mu]);
+
+        int xpnu[3] = int[3](x, y, z);
+        xpnu[nu]    = wrap(xpnu[nu] + 1, shape[nu]);
+
+        int xmnu[3] = int[3](x, y, z);
+        xmnu[nu]    = wrap(xmnu[nu] - 1, shape[nu]);
+
+        int xpm_mnu[3] = int[3](xpm[0], xpm[1], xpm[2]);
+        xpm_mnu[nu]    = wrap(xpm_mnu[nu] - 1, shape[nu]);
+
+        int s_pmu       = siteIdx(xp[0],       xp[1],       xp[2]);
+        int s_pnu       = siteIdx(xpnu[0],     xpnu[1],     xpnu[2]);
+        int s_mnu       = siteIdx(xmnu[0],     xmnu[1],     xmnu[2]);
+        int s_pmu_mnu   = siteIdx(xpm_mnu[0],  xpm_mnu[1],  xpm_mnu[2]);
+
+        // Forward staple: U_ν(s+μ) · U_μ†(s+ν) · U_ν†(s)
+        vec4 fwd = su2_mult(readLink(s_pmu, nu),
+                            su2_dagger(readLink(s_pnu, mu)));
+        fwd      = su2_mult(fwd, su2_dagger(readLink(site, nu)));
+        total   += fwd;
+
+        // Backward staple: U_ν†(s+μ−ν) · U_μ†(s−ν) · U_ν(s−ν)
+        vec4 bwd = su2_mult(su2_dagger(readLink(s_pmu_mnu, nu)),
+                            su2_dagger(readLink(s_mnu, mu)));
+        bwd      = su2_mult(bwd, readLink(s_mnu, nu));
+        total   += bwd;
+    }
+    return total;
+}
+
+void main()
+{
+    uint gid = gl_GlobalInvocationID.x;
+    int  V   = pc.Lx * pc.Ly * pc.Lz;
+    if (gid >= uint(V)) return;
+
+    int site = int(gid);
+    int x    = site % pc.Lx;
+    int y    = (site / pc.Lx) % pc.Ly;
+    int z    = site / (pc.Lx * pc.Ly);
+
+    int parity = (x + y + z) & 1;
+    if (parity != pc.color_parity) return;
+
+    int mu = pc.color_mu;
+
+    // Load + advance RNG state. Mix the sweep counter so consecutive
+    // sweeps don't repeat the same random sequence.
+    uvec4 s = state[site];
+    s.x ^= uint(pc.sweep_count);
+
+    vec4 U_old = readLink(site, mu);
+    vec4 A     = computeStaple(site, mu, x, y, z);
+    vec4 dU    = random_near_identity(s, pc.step_size);
+    vec4 U_new = su2_mult(dU, U_old);
+
+    float dRetr = real_trace_product(U_new, A) - real_trace_product(U_old, A);
+    float dS    = -0.5 * pc.beta * dRetr;
+
+    bool accept = (dS <= 0.0) || (uniform01(s) < exp(-dS));
+    if (accept) writeLink(site, mu, U_new);
+
+    state[site] = s;
+}

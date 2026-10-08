@@ -1,0 +1,60 @@
+#version 450
+
+// Per-workgroup partial sum of the U(1) plaquette action density:
+//
+//     S_gauge / β = Σ_□ (1 − cos φ_□)
+//
+// 2D lattice with periodic boundaries — exactly one (0, 1)-plane plaquette
+// per site, so dispatch one thread per site, accumulate `(1 − cos φ_□)`
+// into the workgroup-shared sum, and emit one partial float per workgroup.
+// Host multiplies by β and adds partials.
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer Theta    { float theta[]; };
+layout(set = 0, binding = 1, std430)          buffer Partials { float partials[]; };
+
+layout(push_constant) uniform PC
+{
+    int Lx;
+    int Ly;
+} pc;
+
+shared float sdata[64];
+
+int wrap(int v, int L) { return (v + L) % L; }
+int siteIdx(int x, int y) { return y * pc.Lx + x; }
+int linkIdx(int site, int mu) { return site * 2 + mu; }
+
+void main()
+{
+    uint tid = gl_LocalInvocationID.x;
+    uint gid = gl_GlobalInvocationID.x;
+    int  V   = pc.Lx * pc.Ly;
+
+    float v = 0.0;
+    if (gid < uint(V))
+    {
+        int site = int(gid);
+        int x    = site % pc.Lx;
+        int y    = site / pc.Lx;
+        int s_p0 = siteIdx(wrap(x + 1, pc.Lx), y);
+        int s_p1 = siteIdx(x, wrap(y + 1, pc.Ly));
+
+        // φ_□ = θ_0(x) + θ_1(x+0) − θ_0(x+1) − θ_1(x)
+        float phi = theta[linkIdx(site, 0)]
+                  + theta[linkIdx(s_p0, 1)]
+                  - theta[linkIdx(s_p1, 0)]
+                  - theta[linkIdx(site, 1)];
+        v = 1.0 - cos(phi);
+    }
+    sdata[tid] = v;
+    barrier();
+
+    if (tid < 32) sdata[tid] += sdata[tid + 32]; barrier();
+    if (tid < 16) sdata[tid] += sdata[tid + 16]; barrier();
+    if (tid <  8) sdata[tid] += sdata[tid +  8]; barrier();
+    if (tid <  4) sdata[tid] += sdata[tid +  4]; barrier();
+    if (tid <  2) sdata[tid] += sdata[tid +  2]; barrier();
+    if (tid == 0) partials[gl_WorkGroupID.x] = sdata[0] + sdata[1];
+}

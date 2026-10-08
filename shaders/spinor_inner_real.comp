@@ -1,0 +1,54 @@
+#version 450
+
+// Workgroup-level partial reduction of the real part of ⟨a, b⟩ for complex
+// spinor vectors. For complex a, b packed as vec2 = (re, im):
+//
+//     Re ⟨aᵢ, bᵢ⟩ = a.re · b.re + a.im · b.im     (treating conj(a) implicitly
+//                                                   so the sum is the Hermitian
+//                                                   inner product's real part)
+//
+// Output is one float per workgroup; the host sums those partials. For
+// L = 64 this is ≤ 128 partials, trivial for the host to add. A second
+// shader pass for the final tree-reduce would shave a microsecond but isn't
+// worth the extra plumbing at the scales we care about.
+//
+// Use cases inside CG:
+//   - ⟨r, r⟩  : a = r, b = r
+//   - ⟨p, Ap⟩ : a = p, b = Ap
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer A        { vec2 a[]; };
+layout(set = 0, binding = 1, std430) readonly buffer B        { vec2 b[]; };
+layout(set = 0, binding = 2, std430)          buffer Partials { float partials[]; };
+
+layout(push_constant) uniform PC
+{
+    int n_components;
+} pc;
+
+shared float sdata[64];
+
+void main()
+{
+    uint tid = gl_LocalInvocationID.x;
+    uint gid = gl_GlobalInvocationID.x;
+
+    float v = 0.0;
+    if (gid < uint(pc.n_components))
+    {
+        vec2 av = a[gid];
+        vec2 bv = b[gid];
+        v = av.x * bv.x + av.y * bv.y;
+    }
+    sdata[tid] = v;
+    barrier();
+
+    // Power-of-two tree reduction. local_size = 64 is hard-coded.
+    if (tid < 32) sdata[tid] += sdata[tid + 32]; barrier();
+    if (tid < 16) sdata[tid] += sdata[tid + 16]; barrier();
+    if (tid <  8) sdata[tid] += sdata[tid +  8]; barrier();
+    if (tid <  4) sdata[tid] += sdata[tid +  4]; barrier();
+    if (tid <  2) sdata[tid] += sdata[tid +  2]; barrier();
+    if (tid == 0) partials[gl_WorkGroupID.x] = sdata[0] + sdata[1];
+}

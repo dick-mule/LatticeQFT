@@ -1,0 +1,94 @@
+#version 450
+
+// Compute the U(1) gauge force per link for the Wilson plaquette action.
+//
+//     S_gauge = β Σ_□ (1 − cos φ_□)
+//     F_gauge(x, μ) = −∂S/∂θ_μ(x)
+//                   = β · Im[ U_μ(x) · A_μ†(x) ]
+//
+// where A_μ(x) is the U(1) staple: sum over perpendicular ν ≠ μ of the
+// forward and backward plaquette phases that complete a loop through link
+// (x, μ). For a forward plaquette with the link in position 0:
+//
+//     φ_□^+ = θ_μ(x) + θ_ν(x+μ) − θ_μ(x+ν) − θ_ν(x)
+//
+// so the "completing phase" stored as the staple is
+//
+//     A_μ^+(x) = e^{i [θ_ν(x+μ) − θ_μ(x+ν) − θ_ν(x)]}     ⇒  U_μ · A_μ^+ = e^{i φ_□^+}.
+//
+// The backward plaquette (link in position 0 with x → x−ν) contributes
+// `e^{−iφ_□^-}`. Combined,
+//
+//     U_μ(x) · A_μ†(x) = Σ_□ containing (x, μ) signed phase factor,
+//
+// and Im of that sum is the gauge force.
+//
+// Output: writes to `force[V·2]` (REPLACES — not accumulates — at each link).
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer GaugeField { float theta[]; };
+layout(set = 0, binding = 1, std430)          buffer Force      { float force[]; };
+
+layout(push_constant) uniform PC
+{
+    int   Lx;
+    int   Ly;
+    float beta;
+} pc;
+
+int wrap(int v, int L) { return (v + L) % L; }
+int siteIdx(int x, int y) { return y * pc.Lx + x; }
+int linkIdx(int site, int mu) { return site * 2 + mu; }
+
+void main()
+{
+    uint gid = gl_GlobalInvocationID.x;
+    int  V   = pc.Lx * pc.Ly;
+    if (gid >= uint(V)) return;
+
+    int site = int(gid);
+    int x    = site % pc.Lx;
+    int y    = site / pc.Lx;
+
+    for (int mu = 0; mu < 2; ++mu)
+    {
+        int nu = 1 - mu;
+        int Lmu = (mu == 0) ? pc.Lx : pc.Ly;
+        int Lnu = (nu == 0) ? pc.Lx : pc.Ly;
+
+        // Coordinates of neighbors.
+        int x_pmu = (mu == 0) ? wrap(x + 1, Lmu) : x;
+        int y_pmu = (mu == 1) ? wrap(y + 1, Lmu) : y;
+        int x_pnu = (nu == 0) ? wrap(x + 1, Lnu) : x;
+        int y_pnu = (nu == 1) ? wrap(y + 1, Lnu) : y;
+        int x_mnu = (nu == 0) ? wrap(x - 1, Lnu) : x;
+        int y_mnu = (nu == 1) ? wrap(y - 1, Lnu) : y;
+
+        int s_pmu = siteIdx(x_pmu, y_pmu);
+        int s_pnu = siteIdx(x_pnu, y_pnu);
+        int s_mnu = siteIdx(x_mnu, y_mnu);
+
+        // For s_{pmu - nu}: combine the two coordinate shifts.
+        int x_pmu_mnu = x_pmu - ((nu == 0) ? 1 : 0); x_pmu_mnu = wrap(x_pmu_mnu, pc.Lx);
+        int y_pmu_mnu = y_pmu - ((nu == 1) ? 1 : 0); y_pmu_mnu = wrap(y_pmu_mnu, pc.Ly);
+        int s_pmu_mnu = siteIdx(x_pmu_mnu, y_pmu_mnu);
+
+        // φ_□^+ = θ_μ(x) + θ_ν(x+μ) − θ_μ(x+ν) − θ_ν(x)
+        float phi_plus = theta[linkIdx(site,  mu)]
+                       + theta[linkIdx(s_pmu, nu)]
+                       - theta[linkIdx(s_pnu, mu)]
+                       - theta[linkIdx(site,  nu)];
+
+        // φ_□^- = θ_μ(x) + θ_ν(x+μ-ν) − θ_μ(x-ν) − θ_ν(x-ν), at plaquette (x-ν, μ, ν).
+        float phi_minus = theta[linkIdx(site,      mu)]
+                        - theta[linkIdx(s_pmu_mnu, nu)]
+                        - theta[linkIdx(s_mnu,     mu)]
+                        + theta[linkIdx(s_mnu,     nu)];
+
+        // F = β · Im(e^{iφ_+} + e^{iφ_-})  (sum over plaquettes containing the link).
+        // For 2D there's only one perpendicular direction ν, so this is the total.
+        float f = pc.beta * (sin(phi_plus) + sin(phi_minus));
+        force[linkIdx(site, mu)] = f;
+    }
+}

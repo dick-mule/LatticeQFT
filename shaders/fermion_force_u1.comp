@@ -1,0 +1,112 @@
+#version 450
+
+// Pseudofermion force per U(1) link for the 2D Schwinger model — one
+// thread per site, writes both μ = 0 and μ = 1 link forces.
+//
+// Closed-form derived from ∂D/∂θ_μ(x), exactly mirroring the CPU
+// implementation in src/monte_carlo/schwinger_hmc.hpp:
+//
+//     F_pf(x, μ) = Im[ U_μ(x) · A_μ(x) ] − Im[ U_μ†(x) · B_μ(x) ]
+//
+// where ψ = (D†D)⁻¹ φ and η = D ψ are the two precomputed spinor fields,
+// and the contractions A, B per direction collapse to a single complex
+// scalar each (the same γ-projector trick that collapses the Wilson apply):
+//
+//   μ = 0:
+//     A = (η*_0(x)   − η*_1(x)  ) · (ψ_0(x+μ) − ψ_1(x+μ))
+//     B = (η*_0(x+μ) + η*_1(x+μ)) · (ψ_0(x)   + ψ_1(x))
+//
+//   μ = 1:
+//     A = (η*_0(x)   − i η*_1(x))   · (ψ_0(x+μ) + i ψ_1(x+μ))
+//     B = (η*_0(x+μ) + i η*_1(x+μ)) · (ψ_0(x)   − i ψ_1(x))
+//
+// The shader ADDS to the existing `force[]` so it can be chained after the
+// gauge-force kernel.
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer GaugeField { float theta[]; };
+layout(set = 0, binding = 1, std430) readonly buffer PsiBuf     { vec2  psi[]; };
+layout(set = 0, binding = 2, std430) readonly buffer EtaBuf     { vec2  eta[]; };
+layout(set = 0, binding = 3, std430)          buffer Force      { float force[]; };
+
+layout(push_constant) uniform PC
+{
+    int Lx;
+    int Ly;
+} pc;
+
+vec2 cmul(vec2 a, vec2 b)
+{
+    return vec2(a.x * b.x - a.y * b.y,
+                a.x * b.y + a.y * b.x);
+}
+vec2 conj(vec2 a) { return vec2(a.x, -a.y); }
+vec2 mul_i(vec2 z) { return vec2(-z.y, z.x); }
+
+int wrap(int v, int L) { return (v + L) % L; }
+int siteIdx(int x, int y) { return y * pc.Lx + x; }
+int linkIdx(int site, int mu) { return site * 2 + mu; }
+int spinIdx(int site, int c)  { return site * 2 + c; }
+
+void main()
+{
+    uint gid = gl_GlobalInvocationID.x;
+    int  V   = pc.Lx * pc.Ly;
+    if (gid >= uint(V)) return;
+
+    int site = int(gid);
+    int x    = site % pc.Lx;
+    int y    = site / pc.Lx;
+
+    vec2 psi0 = psi[spinIdx(site, 0)];
+    vec2 psi1 = psi[spinIdx(site, 1)];
+    vec2 eta0c = conj(eta[spinIdx(site, 0)]);
+    vec2 eta1c = conj(eta[spinIdx(site, 1)]);
+
+    // -------------------------------------------------------------------
+    // μ = 0
+    // -------------------------------------------------------------------
+    {
+        int s_p = siteIdx(wrap(x + 1, pc.Lx), y);
+        vec2 psi0_p = psi[spinIdx(s_p, 0)];
+        vec2 psi1_p = psi[spinIdx(s_p, 1)];
+        vec2 eta0c_p = conj(eta[spinIdx(s_p, 0)]);
+        vec2 eta1c_p = conj(eta[spinIdx(s_p, 1)]);
+
+        // A = (η*_0(x)   − η*_1(x))   · (ψ_0(x+μ) − ψ_1(x+μ))
+        vec2 A = cmul(eta0c   - eta1c,   psi0_p - psi1_p);
+        // B = (η*_0(x+μ) + η*_1(x+μ)) · (ψ_0(x)   + ψ_1(x))
+        vec2 B = cmul(eta0c_p + eta1c_p, psi0   + psi1);
+
+        float th  = theta[linkIdx(site, 0)];
+        vec2  U   = vec2(cos(th), sin(th));
+        vec2  Ud  = conj(U);
+
+        float f = cmul(U, A).y - cmul(Ud, B).y;
+        force[linkIdx(site, 0)] += f;
+    }
+
+    // -------------------------------------------------------------------
+    // μ = 1
+    // -------------------------------------------------------------------
+    {
+        int s_p = siteIdx(x, wrap(y + 1, pc.Ly));
+        vec2 psi0_p = psi[spinIdx(s_p, 0)];
+        vec2 psi1_p = psi[spinIdx(s_p, 1)];
+        vec2 eta0c_p = conj(eta[spinIdx(s_p, 0)]);
+        vec2 eta1c_p = conj(eta[spinIdx(s_p, 1)]);
+
+        // A = (η*_0(x)   − i η*_1(x))   · (ψ_0(x+μ) + i ψ_1(x+μ))
+        vec2 A = cmul(eta0c   - mul_i(eta1c),   psi0_p + mul_i(psi1_p));
+        // B = (η*_0(x+μ) + i η*_1(x+μ)) · (ψ_0(x)   − i ψ_1(x))
+        vec2 B = cmul(eta0c_p + mul_i(eta1c_p), psi0   - mul_i(psi1));
+
+        float th  = theta[linkIdx(site, 1)];
+        vec2  U   = vec2(cos(th), sin(th));
+        vec2  Ud  = conj(U);
+
+        float f = cmul(U, A).y - cmul(Ud, B).y;
+        force[linkIdx(site, 1)] += f;
+    }
+}

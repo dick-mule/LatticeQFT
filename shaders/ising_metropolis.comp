@@ -1,0 +1,80 @@
+#version 450
+
+// 2D Ising Metropolis sweep — one thread per spin, dispatched once per parity.
+//
+// Spins are stored as int32 ± 1. On each thread:
+//   1. Check site parity matches `color_parity`; non-matching threads return.
+//   2. Sum the 4 nearest-neighbor spins with periodic BC.
+//   3. ΔS = 2 β s neighbor_sum.
+//   4. Accept with min(1, exp(-ΔS)). On accept, flip the spin.
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) buffer SpinField
+{
+    int spins[]; // length V; values ∈ {-1, +1}
+};
+
+layout(set = 0, binding = 1, std430) buffer RngStates
+{
+    uvec4 state[]; // length V; xoshiro128++
+};
+
+layout(push_constant) uniform PC
+{
+    int   Lx;
+    int   Ly;
+    int   color_parity;
+    float beta;
+    int   sweep_count;
+} pc;
+
+uint rotl32(uint x, uint k) { return (x << k) | (x >> (32u - k)); }
+
+uint xoshiro_next(inout uvec4 s)
+{
+    uint result = rotl32(s.x + s.w, 7u) + s.x;
+    uint t      = s.y << 9u;
+    s.z ^= s.x; s.w ^= s.y; s.y ^= s.z; s.x ^= s.w;
+    s.z ^= t;   s.w  = rotl32(s.w, 11u);
+    return result;
+}
+
+float uniform01(inout uvec4 s)
+{
+    return float(xoshiro_next(s) >> 8) * (1.0 / 16777216.0);
+}
+
+void main()
+{
+    uint gid = gl_GlobalInvocationID.x;
+    int  V   = pc.Lx * pc.Ly;
+    if (gid >= uint(V)) return;
+
+    int site = int(gid);
+    int x    = site % pc.Lx;
+    int y    = site / pc.Lx;
+
+    int parity = (x + y) & 1;
+    if (parity != pc.color_parity) return;
+
+    int xp = (x + 1) % pc.Lx;
+    int xm = (x + pc.Lx - 1) % pc.Lx;
+    int yp = (y + 1) % pc.Ly;
+    int ym = (y + pc.Ly - 1) % pc.Ly;
+
+    int s   = spins[site];
+    int sum = spins[ y  * pc.Lx + xp]
+            + spins[ y  * pc.Lx + xm]
+            + spins[yp  * pc.Lx + x ]
+            + spins[ym  * pc.Lx + x ];
+
+    float dS = 2.0 * pc.beta * float(s) * float(sum);
+
+    uvec4 rng = state[site];
+    rng.x ^= uint(pc.sweep_count);
+
+    bool accept = (dS <= 0.0) || (uniform01(rng) < exp(-dS));
+    if (accept) spins[site] = -s;
+    state[site] = rng;
+}

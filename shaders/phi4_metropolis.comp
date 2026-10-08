@@ -1,0 +1,98 @@
+#version 450
+
+// 2D φ⁴ Metropolis sweep — one thread per site.
+//
+// Action: S = Σ_x [ ½ Σ_μ (φ_{x+μ} − φ_x)² + ½ m² φ² + (λ/24) φ⁴ ].
+//
+// Single-site Δφ = δ flip:
+//   ΔS = -δ · S_nn(x) + D·(φ'² − φ²) + ½ m²(φ'² − φ²) + (λ/24)(φ'⁴ − φ⁴)
+// with S_nn(x) = Σ_μ (φ_{x+μ} + φ_{x-μ}), D = 2 for 2D.
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) buffer ScalarField
+{
+    float phi[]; // length V
+};
+
+layout(set = 0, binding = 1, std430) buffer RngStates
+{
+    uvec4 state[]; // length V
+};
+
+layout(push_constant) uniform PC
+{
+    int   Lx;
+    int   Ly;
+    int   color_parity;
+    float m_sq;
+    float lambda;
+    float step_size;
+    int   sweep_count;
+} pc;
+
+uint rotl32(uint x, uint k) { return (x << k) | (x >> (32u - k)); }
+
+uint xoshiro_next(inout uvec4 s)
+{
+    uint result = rotl32(s.x + s.w, 7u) + s.x;
+    uint t      = s.y << 9u;
+    s.z ^= s.x; s.w ^= s.y; s.y ^= s.z; s.x ^= s.w;
+    s.z ^= t;   s.w  = rotl32(s.w, 11u);
+    return result;
+}
+
+float uniform01(inout uvec4 s)
+{
+    return float(xoshiro_next(s) >> 8) * (1.0 / 16777216.0);
+}
+
+float normal01(inout uvec4 s)
+{
+    float u1 = max(uniform01(s), 1e-20);
+    float u2 = uniform01(s);
+    return sqrt(-2.0 * log(u1)) * cos(6.28318530717958647692 * u2);
+}
+
+void main()
+{
+    uint gid = gl_GlobalInvocationID.x;
+    int  V   = pc.Lx * pc.Ly;
+    if (gid >= uint(V)) return;
+
+    int site = int(gid);
+    int x    = site % pc.Lx;
+    int y    = site / pc.Lx;
+
+    int parity = (x + y) & 1;
+    if (parity != pc.color_parity) return;
+
+    int xp = (x + 1) % pc.Lx;
+    int xm = (x + pc.Lx - 1) % pc.Lx;
+    int yp = (y + 1) % pc.Ly;
+    int ym = (y + pc.Ly - 1) % pc.Ly;
+
+    float phi_old = phi[site];
+    float Snn     = phi[ y  * pc.Lx + xp]
+                  + phi[ y  * pc.Lx + xm]
+                  + phi[yp  * pc.Lx + x ]
+                  + phi[ym  * pc.Lx + x ];
+
+    uvec4 rng = state[site];
+    rng.x ^= uint(pc.sweep_count);
+    float phi_new = phi_old + pc.step_size * normal01(rng);
+
+    float dphi2 = phi_new * phi_new - phi_old * phi_old;
+    float dphi4 = phi_new * phi_new * phi_new * phi_new
+                - phi_old * phi_old * phi_old * phi_old;
+
+    // D = 2 for 2D.
+    float dS = -(phi_new - phi_old) * Snn
+             + 2.0 * dphi2
+             + 0.5 * pc.m_sq * dphi2
+             + (pc.lambda / 24.0) * dphi4;
+
+    bool accept = (dS <= 0.0) || (uniform01(rng) < exp(-dS));
+    if (accept) phi[site] = phi_new;
+    state[site] = rng;
+}

@@ -1,0 +1,36 @@
+#version 450
+
+// Fused real-scalar AXPBY on complex spinor vectors:
+//
+//     y[i] = a · x[i] + b · y[i]      i = 0 ... n_components − 1
+//
+// `x` and `y` are arrays of complex spinor components (each a vec2 = (re, im)).
+// `a` and `b` are real scalars passed via push constants. CG's α and β are
+// real (Hermitian A, positive-definite quadratic form), so we never need
+// complex scalar AXPBY.
+//
+// Use cases:
+//   - x += α·p          : y=x, x=p, a=α,  b=1
+//   - r −= α·Ap         : y=r, x=Ap, a=−α, b=1
+//   - p = r + β·p       : y=p, x=r,  a=1,  b=β
+//   - y = 0             : a=0, b=0
+//   - y = x (copy)      : a=1, b=0
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer X { vec2 x[]; };
+layout(set = 0, binding = 1, std430) buffer Y          { vec2 y[]; };
+
+layout(push_constant) uniform PC
+{
+    int   n_components;   // total vec2 entries (V · Nc for spinor)
+    float a;
+    float b;
+} pc;
+
+void main()
+{
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= uint(pc.n_components)) return;
+    y[gid] = pc.a * x[gid] + pc.b * y[gid];
+}

@@ -1,0 +1,84 @@
+# =============================================================================
+# Build artifacts
+# =============================================================================
+
+build/
+out/
+# CLion's default per-config build dirs (cmake-build-debug, cmake-build-release, …)
+cmake-build-*/
+
+# CMake out-of-source artifacts that occasionally leak into the source tree.
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+*.cbp
+
+# Machine-specific CMake presets (absolute vcpkg toolchain / VULKAN_SDK paths).
+CMakeUserPresets.json
+
+# vcpkg manifest-mode install tree.
+vcpkg_installed/
+**/vcpkg_installed/
+
+# ctest temporary logs.
+Testing/
+
+# Compiled shaders — rebuild from source.
+*.spv
+
+# Object files / binaries / libraries.
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# =============================================================================
+# IDE / editor state (per-machine; contains absolute paths)
+# =============================================================================
+
+.idea/
+.vscode/
+.vs/
+*.swp
+*.swo
+*~
+
+# =============================================================================
+# OS noise
+# =============================================================================
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =============================================================================
+# Tool state
+# =============================================================================
+
+.claude/
+
+# =============================================================================
+# Local-only notes / drafts / data (not for public repo).
+# =============================================================================
+
+SCOPING.md
+NOTES.md
+TODO.md
+data/
+plots/
+*.csv
+*.json.local
+
+# =============================================================================
+# Scratch / misc
+# =============================================================================
+
+external/
+*.log
+*.tmp
+.cache/

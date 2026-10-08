@@ -1,0 +1,150 @@
+#version 450
+
+// Wilson-Dirac operator apply for the 2D Schwinger model — one thread per
+// lattice site, computes both spinor components.
+//
+// Operator:
+//
+//   D ψ(x) = (m + 2) ψ(x)
+//          − ½ Σ_μ [ (1 − γ_μ) U_μ(x)    ψ(x+μ)
+//                  + (1 + γ_μ) U_μ†(x−μ) ψ(x−μ) ]
+//
+// γ⁰ = σ₁, γ¹ = σ₂ (standard 2D representation), so the (1 ± γ_μ)/2
+// projectors collapse the 2-spinor to a single scalar "combined":
+//
+//   μ=0 forward,  (1−γ⁰)/2 ψ:   combined = ψ_0 − ψ_1
+//                  contribution to y: (−U·combined, +U·combined)
+//   μ=0 backward, (1+γ⁰)/2 ψ:   combined = ψ_0 + ψ_1
+//                  contribution to y: (−U†·combined, −U†·combined)
+//   μ=1 forward,  (1−γ¹)/2 ψ:   combined = ψ_0 + i·ψ_1
+//                  contribution to y: (−U·combined, +i·U·combined)
+//   μ=1 backward, (1+γ¹)/2 ψ:   combined = ψ_0 − i·ψ_1
+//                  contribution to y: (−U†·combined, −i·U†·combined)
+//
+// `dagger = 1` swaps every (1 ± γ_μ) ↔ (1 ∓ γ_μ), which by γ⁵-Hermiticity
+// of the Wilson operator gives D† via the same code path.
+//
+// Complex numbers are packed as vec2 (real, imag).
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer GaugeField
+{
+    float theta[]; // V · 2 link angles
+};
+
+layout(set = 0, binding = 1, std430) readonly buffer SpinorIn
+{
+    vec2 psi_in[]; // V · 2 complex spinor components
+};
+
+layout(set = 0, binding = 2, std430) buffer SpinorOut
+{
+    vec2 psi_out[]; // V · 2 complex spinor components
+};
+
+layout(push_constant) uniform PC
+{
+    int   Lx;
+    int   Ly;
+    float mass;
+    int   dagger;       // 0 = D, 1 = D†
+} pc;
+
+vec2 cmul(vec2 a, vec2 b)
+{
+    return vec2(a.x * b.x - a.y * b.y,
+                a.x * b.y + a.y * b.x);
+}
+
+// i · z  (90° rotation of a complex number).
+vec2 mul_i(vec2 z) { return vec2(-z.y, z.x); }
+
+int wrap(int v, int L) { return (v + L) % L; }
+int siteIdx(int x, int y) { return y * pc.Lx + x; }
+int linkIdx(int site, int mu) { return site * 2 + mu; }
+int spinIdx(int site, int c)  { return site * 2 + c; }
+
+void main()
+{
+    uint gid = gl_GlobalInvocationID.x;
+    int  V   = pc.Lx * pc.Ly;
+    if (gid >= uint(V)) return;
+
+    int site = int(gid);
+    int x    = site % pc.Lx;
+    int y    = site / pc.Lx;
+
+    // Diagonal piece: (m + 2) ψ(x).
+    float mp2 = pc.mass + 2.0;
+    vec2  y0  = mp2 * psi_in[spinIdx(site, 0)];
+    vec2  y1  = mp2 * psi_in[spinIdx(site, 1)];
+
+    // -------------------------------------------------------------------
+    // μ = 0
+    // -------------------------------------------------------------------
+    {
+        int s_p = siteIdx(wrap(x + 1, pc.Lx), y);
+        int s_m = siteIdx(wrap(x - 1, pc.Lx), y);
+
+        // U_μ(x) e^{+iθ(x)},  U_μ†(x−μ) = e^{−iθ(x−μ)}.
+        float th_fwd  =  theta[linkIdx(site, 0)];
+        float th_bwd  = -theta[linkIdx(s_m,  0)];
+        vec2  U_fwd   = vec2(cos(th_fwd), sin(th_fwd));
+        vec2  U_bwd   = vec2(cos(th_bwd), sin(th_bwd));
+
+        vec2 a0 = psi_in[spinIdx(s_p, 0)];
+        vec2 a1 = psi_in[spinIdx(s_p, 1)];
+        vec2 b0 = psi_in[spinIdx(s_m, 0)];
+        vec2 b1 = psi_in[spinIdx(s_m, 1)];
+
+        // Forward hop: dagger ⇔ (1+γ⁰)/2 → combined = ψ_0 + ψ_1
+        //              standard ⇔ (1−γ⁰)/2 → combined = ψ_0 − ψ_1
+        vec2 cmb_fwd = (pc.dagger != 0) ? (a0 + a1) : (a0 - a1);
+        vec2 p_fwd   = cmul(U_fwd, cmb_fwd);
+        y0 -= 0.5 * p_fwd;
+        y1 -= 0.5 * ((pc.dagger != 0) ? p_fwd : -p_fwd);
+
+        // Backward hop: dagger ⇔ (1−γ⁰)/2,  standard ⇔ (1+γ⁰)/2.
+        vec2 cmb_bwd = (pc.dagger != 0) ? (b0 - b1) : (b0 + b1);
+        vec2 p_bwd   = cmul(U_bwd, cmb_bwd);
+        y0 -= 0.5 * p_bwd;
+        y1 -= 0.5 * ((pc.dagger != 0) ? -p_bwd : p_bwd);
+    }
+
+    // -------------------------------------------------------------------
+    // μ = 1
+    // -------------------------------------------------------------------
+    {
+        int s_p = siteIdx(x, wrap(y + 1, pc.Ly));
+        int s_m = siteIdx(x, wrap(y - 1, pc.Ly));
+
+        float th_fwd =  theta[linkIdx(site, 1)];
+        float th_bwd = -theta[linkIdx(s_m,  1)];
+        vec2  U_fwd  = vec2(cos(th_fwd), sin(th_fwd));
+        vec2  U_bwd  = vec2(cos(th_bwd), sin(th_bwd));
+
+        vec2 a0 = psi_in[spinIdx(s_p, 0)];
+        vec2 a1 = psi_in[spinIdx(s_p, 1)];
+        vec2 b0 = psi_in[spinIdx(s_m, 0)];
+        vec2 b1 = psi_in[spinIdx(s_m, 1)];
+
+        // Forward hop: standard combined = ψ_0 + i ψ_1; dagger combined = ψ_0 − i ψ_1.
+        vec2 cmb_fwd = (pc.dagger != 0) ? (a0 - mul_i(a1)) : (a0 + mul_i(a1));
+        vec2 p_fwd   = cmul(U_fwd, cmb_fwd);
+        y0 -= 0.5 * p_fwd;
+        // y1 second component: standard −i, dagger +i.
+        vec2 i_p_fwd = mul_i(p_fwd);
+        y1 -= 0.5 * ((pc.dagger != 0) ? i_p_fwd : -i_p_fwd);
+
+        // Backward hop: standard combined = ψ_0 − i ψ_1; dagger combined = ψ_0 + i ψ_1.
+        vec2 cmb_bwd = (pc.dagger != 0) ? (b0 + mul_i(b1)) : (b0 - mul_i(b1));
+        vec2 p_bwd   = cmul(U_bwd, cmb_bwd);
+        y0 -= 0.5 * p_bwd;
+        vec2 i_p_bwd = mul_i(p_bwd);
+        y1 -= 0.5 * ((pc.dagger != 0) ? -i_p_bwd : i_p_bwd);
+    }
+
+    psi_out[spinIdx(site, 0)] = y0;
+    psi_out[spinIdx(site, 1)] = y1;
+}

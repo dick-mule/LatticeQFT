@@ -1,0 +1,160 @@
+#version 450
+
+// Compact U(1) Metropolis sweep — one thread per link.
+//
+// Same dispatch convention as su2_metropolis.comp: one dispatch per
+// (parity, μ) color, with memory barriers between dispatches so that
+// each color sees the latest writes from the previous one.
+//
+// At each link (site, μ):
+//   1. Read θ_old and the (A_re, A_im) staple coming from the 2(Dim − 1)
+//      plaquettes containing the link.
+//   2. Sample θ_new = θ_old + σ · N(0, 1)  (symmetric proposal).
+//   3. ΔS = β · [ (cos θ_old − cos θ_new) · A_re
+//              + (sin θ_new − sin θ_old) · A_im ].
+//   4. Accept with probability min(1, exp(−ΔS)). On accept, write θ_new.
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) buffer GaugeField
+{
+    float theta[]; // V · Dim link angles
+};
+
+layout(set = 0, binding = 1, std430) buffer RngStates
+{
+    uvec4 state[]; // V xoshiro128++ states
+};
+
+layout(push_constant) uniform PC
+{
+    int   Lx;
+    int   Ly;
+    int   Lz;
+    int   Dim;
+    int   color_parity;
+    int   color_mu;
+    float beta;
+    float step_size;
+    int   sweep_count;
+} pc;
+
+// ---------------------------------------------------------------------------
+// xoshiro128++
+// ---------------------------------------------------------------------------
+
+uint rotl32(uint x, uint k) { return (x << k) | (x >> (32u - k)); }
+
+uint xoshiro_next(inout uvec4 s)
+{
+    uint result = rotl32(s.x + s.w, 7u) + s.x;
+    uint t      = s.y << 9u;
+    s.z ^= s.x;
+    s.w ^= s.y;
+    s.y ^= s.z;
+    s.x ^= s.w;
+    s.z ^= t;
+    s.w  = rotl32(s.w, 11u);
+    return result;
+}
+
+float uniform01(inout uvec4 s)
+{
+    return float(xoshiro_next(s) >> 8) * (1.0 / 16777216.0);
+}
+
+float normal01(inout uvec4 s)
+{
+    float u1 = max(uniform01(s), 1e-20);
+    float u2 = uniform01(s);
+    return sqrt(-2.0 * log(u1)) * cos(6.28318530717958647692 * u2);
+}
+
+// ---------------------------------------------------------------------------
+// Indexing
+// ---------------------------------------------------------------------------
+
+int wrap(int v, int L) { return (v + L) % L; }
+int siteIdx(int x, int y, int z) { return (z * pc.Ly + y) * pc.Lx + x; }
+int linkIdx(int site, int mu) { return site * pc.Dim + mu; }
+
+// ---------------------------------------------------------------------------
+// U(1) staple at link (site, μ): returns (A_re, A_im) such that
+//   S_local = const − β · Re[e^{iθ} · A].
+// Same formula as `U1Model::staple` in src/models/u1.hpp.
+// ---------------------------------------------------------------------------
+
+vec2 computeStapleU1(int site, int mu, int x, int y, int z)
+{
+    vec2 A = vec2(0.0);
+    int  shape[3] = int[3](pc.Lx, pc.Ly, pc.Lz);
+
+    for (int nu = 0; nu < pc.Dim; ++nu)
+    {
+        if (nu == mu) continue;
+
+        // Positive plaquette: φ_+(ν) = θ_ν(y+μ) − θ_μ(y+ν) − θ_ν(y).
+        int xp[3] = int[3](x, y, z);
+        xp[mu]    = wrap(xp[mu] + 1, shape[mu]);
+        int xpnu[3] = int[3](x, y, z);
+        xpnu[nu]    = wrap(xpnu[nu] + 1, shape[nu]);
+
+        int s_pmu = siteIdx(xp[0], xp[1], xp[2]);
+        int s_pnu = siteIdx(xpnu[0], xpnu[1], xpnu[2]);
+
+        float phi_plus = theta[linkIdx(s_pmu, nu)]
+                       - theta[linkIdx(s_pnu, mu)]
+                       - theta[linkIdx(site,  nu)];
+        A.x += cos(phi_plus);
+        A.y += sin(phi_plus);
+
+        // Negative plaquette: φ_−(ν) = θ_μ(y−ν) + θ_ν(y−ν+μ) − θ_ν(y−ν).
+        // Contributes Re[e^{iθ} · e^{−iφ_−}] → A += (cos φ_−, −sin φ_−).
+        int xmnu[3] = int[3](x, y, z);
+        xmnu[nu]    = wrap(xmnu[nu] - 1, shape[nu]);
+        int xmnu_pmu[3] = int[3](xmnu[0], xmnu[1], xmnu[2]);
+        xmnu_pmu[mu]    = wrap(xmnu_pmu[mu] + 1, shape[mu]);
+
+        int s_mnu     = siteIdx(xmnu[0], xmnu[1], xmnu[2]);
+        int s_mnu_pmu = siteIdx(xmnu_pmu[0], xmnu_pmu[1], xmnu_pmu[2]);
+
+        float phi_minus = theta[linkIdx(s_mnu,     mu)]
+                        + theta[linkIdx(s_mnu_pmu, nu)]
+                        - theta[linkIdx(s_mnu,     nu)];
+        A.x += cos(phi_minus);
+        A.y -= sin(phi_minus);
+    }
+    return A;
+}
+
+void main()
+{
+    uint gid = gl_GlobalInvocationID.x;
+    int  V   = pc.Lx * pc.Ly * pc.Lz;
+    if (gid >= uint(V)) return;
+
+    int site = int(gid);
+    int x    = site % pc.Lx;
+    int y    = (site / pc.Lx) % pc.Ly;
+    int z    = site / (pc.Lx * pc.Ly);
+
+    int parity = (x + y + z) & 1;
+    if (parity != pc.color_parity) return;
+
+    int mu = pc.color_mu;
+
+    uvec4 s = state[site];
+    s.x ^= uint(pc.sweep_count);
+
+    float theta_old = theta[linkIdx(site, mu)];
+    vec2  A         = computeStapleU1(site, mu, x, y, z);
+    float theta_new = theta_old + pc.step_size * normal01(s);
+
+    float dS = pc.beta * ( (cos(theta_old) - cos(theta_new)) * A.x
+                         + (sin(theta_new) - sin(theta_old)) * A.y );
+
+    bool accept = (dS <= 0.0) || (uniform01(s) < exp(-dS));
+    if (accept) theta[linkIdx(site, mu)] = theta_new;
+
+    state[site] = s;
+}
