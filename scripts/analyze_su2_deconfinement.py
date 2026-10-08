@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""4D SU(2) finite-temperature deconfinement from `LatticeQFT --model su2 --dim 4 --nt N`.
+"""4D SU(2) (or, with --group su3, SU(3)) finite-temperature deconfinement from
+`LatticeQFT --model su2|su3 --dim 4 --nt N`.
 
 Reads one or more CSVs (one per N_t) with the Polyakov-loop columns, prints <|P|> and the
 susceptibility chi_P against beta with the susceptibility peak as the estimate of beta_c, and
@@ -13,11 +14,15 @@ import argparse, csv, math, os
 import numpy as np
 p = argparse.ArgumentParser()
 p.add_argument('csvs', nargs='+'); p.add_argument('--creutz', default=''); p.add_argument('--figdir', default='docs/figures')
+p.add_argument('--group', default='su2', choices=['su2', 'su3'])
 a = p.parse_args()
-KNOWN = {2: 1.88, 4: 2.30, 6: 2.43}
-# two-loop SU(2) lattice scale: a Lambda_L = (b0 g^2)^(-b1/(2 b0^2)) exp(-1/(2 b0 g^2)), g^2 = 4/beta
-B0 = 22.0 / (48.0 * math.pi ** 2); B1 = 136.0 / (3.0 * (16.0 * math.pi ** 2) ** 2)
-aLambda = lambda beta: (B0 * 4.0 / beta) ** (-B1 / (2 * B0 ** 2)) * np.exp(-beta / (8 * B0))
+N = 2 if a.group == 'su2' else 3
+KNOWN = {2: 1.88, 4: 2.30, 6: 2.43} if N == 2 else {4: 5.69, 6: 5.89}
+# two-loop SU(N) lattice scale: a Lambda_L = (b0 g^2)^(-b1/(2 b0^2)) exp(-1/(2 b0 g^2)), g^2 = 2N/beta
+B0 = 11.0 * N / (48.0 * math.pi ** 2); B1 = 34.0 * N * N / (3.0 * (16.0 * math.pi ** 2) ** 2)
+aLambda = lambda beta: (B0 * 2.0 * N / beta) ** (-B1 / (2 * B0 ** 2)) * np.exp(-beta / (4.0 * N * B0))
+TAG = f'su{N}'
+
 series = []
 for f in a.csvs:
     rows = list(csv.DictReader(open(f)))
@@ -37,7 +42,7 @@ if a.creutz and os.path.exists(a.creutz):
     ok = sig > 0
     aL = aLambda
     pref = np.exp(np.mean(np.log(sig[ok]) - 2 * np.log(aL(b[ok]))))
-    slope_meas = np.polyfit(b[ok], np.log(sig[ok]), 1)[0]; slope_2loop = -2 * (1 / (8 * B0) - (B1 / (2 * B0 ** 2)) / np.mean(b[ok]))
+    slope_meas = np.polyfit(b[ok], np.log(sig[ok]), 1)[0]; slope_2loop = -2 * (1 / (4.0 * N * B0) - (B1 / (2 * B0 ** 2)) / np.mean(b[ok]))
     print(f"\nasymptotic scaling of chi(2,2) = sigma a^2 over beta {b.min():.2f}..{b.max():.2f}: measured d ln(sigma a^2)/d beta = {slope_meas:.2f} "
           f"vs two-loop {slope_2loop:.2f}; fitted (sqrt(sigma)/Lambda_L)^2 = {pref:.0f} -> sqrt(sigma)/Lambda_L ~ {math.sqrt(pref):.0f}; "
           f"residual scatter of ln(sigma a^2) about the two-loop curve: {np.std(np.log(sig[ok]) - np.log(pref * aL(b[ok]) ** 2)):.2f}")
@@ -52,13 +57,13 @@ try:
         if nt in KNOWN: ax[0].axvline(KNOWN[nt], color='gray', ls=':'); ax[1].axvline(KNOWN[nt], color='gray', ls=':')
     ax[0].set_xlabel('beta'); ax[0].set_ylabel('<|P|>'); ax[0].set_title('Polyakov loop (dotted: known beta_c)'); ax[0].legend()
     ax[1].set_xlabel('beta'); ax[1].set_ylabel('chi_P'); ax[1].set_title('susceptibility'); ax[1].legend()
-    fig.tight_layout(); fig.savefig(os.path.join(a.figdir, 'su2_deconfinement.png'), dpi=130)
+    fig.tight_layout(); fig.savefig(os.path.join(a.figdir, f'{TAG}_deconfinement.png'), dpi=130)
     if scal:
         b, sig, pref, aL = scal
         fig2, ax2 = plt.subplots(figsize=(5.5, 4)); xx = np.linspace(b.min(), b.max(), 50)
         ax2.semilogy(b, sig, 'o', label='chi(2,2) = sigma a^2'); ax2.semilogy(xx, pref * aL(xx) ** 2, '-', label='two-loop scaling, fitted prefactor')
-        ax2.set_xlabel('beta'); ax2.set_ylabel('sigma a^2'); ax2.legend(); ax2.set_title('4D SU(2) asymptotic scaling')
-        fig2.tight_layout(); fig2.savefig(os.path.join(a.figdir, 'su2_asymptotic_scaling.png'), dpi=130)
+        ax2.set_xlabel('beta'); ax2.set_ylabel('sigma a^2'); ax2.legend(); ax2.set_title(f'4D SU({N}) asymptotic scaling')
+        fig2.tight_layout(); fig2.savefig(os.path.join(a.figdir, f'{TAG}_asymptotic_scaling.png'), dpi=130)
     print('figures written to', a.figdir)
 except ImportError:
     print('(matplotlib not available: no figures)')

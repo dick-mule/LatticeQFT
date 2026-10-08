@@ -27,9 +27,9 @@
 #include "../fields/link_field.hpp"
 #include "../lattice/lattice.hpp"
 #include "../math/su2.hpp"
+#include "../math/su3.hpp"
 
-#include <cmath>
-#include <vector>
+#include <complex>
 
 namespace lqft::obs
 {
@@ -69,6 +69,44 @@ double averagePolyakovLoop(const Lattice<Dim>& lattice,
         ++n;
     }
     return (n > 0) ? sum / static_cast<double>(n) : 0.0;
+}
+
+// ---------------------------------------------------------------------------
+// SU(3): the loop is complex, P = ⅓ tr ∏ U_t, and the centre is Z₃ (P → e^{2πi/3} P),
+// so the modulus is again the finite-volume order parameter. The SU(3) transition is
+// first order; known β_c(N_t = 4) ≈ 5.69 for the Wilson action.
+// ---------------------------------------------------------------------------
+
+template<int Dim>
+std::complex<double> polyakovLoopAt(const Lattice<Dim>& lattice,
+                                    const LinkField<su3::Element, Dim>& field,
+                                    int site0, int t_axis, int Nt)
+{
+    su3::Element P = su3::Element::identity();
+    int s = site0;
+    for (int t = 0; t < Nt; ++t)
+    {
+        P = su3::multiply(P, field(s, t_axis));
+        s = lattice.forward(s, t_axis);
+    }
+    return su3::trace(P) / 3.0;
+}
+
+template<int Dim>
+std::complex<double> averagePolyakovLoop(const Lattice<Dim>& lattice,
+                                         const LinkField<su3::Element, Dim>& field,
+                                         int t_axis, int Nt)
+{
+    std::complex<double> sum{0.0, 0.0};
+    long n = 0;
+    const int V = lattice.volume();
+    for (int s = 0; s < V; ++s)
+    {
+        if (lattice.coords(s)[static_cast<std::size_t>(t_axis)] != 0) continue;
+        sum += polyakovLoopAt(lattice, field, s, t_axis, Nt);
+        ++n;
+    }
+    return (n > 0) ? sum / static_cast<double>(n) : std::complex<double>{0.0, 0.0};
 }
 
 } // namespace lqft::obs

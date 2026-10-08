@@ -69,7 +69,19 @@ after 3i were never written up; this entry catches the README up with the tree.
 - **CI**: a CPU-only GitHub Actions job builds the core and runs the full test suite on every
   push (the Vulkan visualizer needs a GPU and is built locally).
 
-**Round 4a — 4D SU(2) deconfinement.** `--nt N` makes the `--model su2 --dim 4` driver run
+**Round 3o — Schwinger pseudoscalar correlators and the mass gap.** The dense propagator
+`S = D⁻¹` (Gauss–Jordan on the `2V × 2V` Wilson–Dirac matrix; `L = 16` is 512 × 512) gives
+the connected and disconnected pseudoscalar correlators exactly, with translation averaging
+over all sources (`src/observables/meson_correlators.hpp`; `--corr-out` on `schwinger-hmc`).
+`C_conn` is the flavour non-singlet "pion", `C_conn − C_disc` the `N_f = 1` singlet whose mass
+should stay at the Schwinger boson `e/√π` at the chiral point. Tests: `D D⁻¹ = 1` to 1e-10,
+γ⁵-Hermiticity of the inverse, free-field two-fermion threshold. The `(β, m)` grid
+(`scripts/run_schwinger_mass_grid.py`, `analyze_schwinger_mass.py`) locates the Wilson
+chiral point `m_c(β)` from `M_π² ∝ m − m_c` to ±0.002 at `β = 2, 3, 4`; the singlet mass is
+the hard part (a topological constant in the disconnected piece, and statistics), see
+[`docs/math/schwinger_mass_gap.md`](docs/math/schwinger_mass_gap.md) for where it stands.
+
+**Round 3p — 4D SU(2) deconfinement.** `--nt N` makes the `--model su2 --dim 4` driver run
 an `L³ × N` lattice and append the Polyakov loop `⟨|P̄|⟩`, its susceptibility
 `χ_P = N_s³(⟨P̄²⟩ − ⟨|P̄|⟩²)` and the extents to the β-scan (`src/observables/polyakov.hpp`;
 tests: cold loop, cyclicity, the Z₂ centre flip negates every loop and keeps every plaquette,
@@ -81,6 +93,17 @@ small-loop string tension is not yet in the scaling window. Figures in `docs/fig
 regeneration commands and the note in
 [`docs/math/su2_deconfinement.md`](docs/math/su2_deconfinement.md);
 `scripts/analyze_su2_deconfinement.py` reproduces the tables.
+
+**Round 3q — SU(3) heat-bath, CLI and benchmarks.** Cabibbo–Marinari heat-bath for SU(3)
+(`src/monte_carlo/su3_heatbath.hpp`): three SU(2)-subgroup Kennedy–Pendleton steps per link
+with the quaternion projection of the `U·A` block, re-projected to SU(3). `--model su3`
+(`--dim 2–4`, `--use-heatbath`, `--nt`) with plaquette, small Wilson loops, Creutz ratio and
+the complex Polyakov loop. On `8⁴` the plaquette reproduces the published Wilson-action values
+to three digits (`β = 5.7`: 0.5496 vs 0.549; `6.0`: 0.5943 vs 0.594; `6.2`: 0.6139 vs 0.614),
+and the `N_t = 4` scan puts the first-order deconfinement jump at `β = 5.675–5.70` (published
+5.69). Six tests, including the Z₃ centre rotation on the Polyakov loop. Note in
+[`docs/math/su3_lattice.md`](docs/math/su3_lattice.md). The earlier "not yet on the CLI"
+remark under the SU(3) bullet above is superseded.
 
 ### Validation map
 
@@ -97,6 +120,8 @@ regeneration commands and the note in
 | Multilevel exact algebra, mean, variance | `tests/test_multilevel.cpp` |
 | Dense propagator `D D⁻¹ = 1`, γ⁵-Hermiticity, free-field two-fermion threshold | `tests/test_mesons.cpp` |
 | Polyakov loop: cold, cyclic, Z₂ centre flip, hot | `tests/test_polyakov.cpp` |
+| SU(3) heat-bath: projection inverts embedding, unitarity, `⟨P⟩ ≈ β/18`, Metropolis agreement, Z₃ on the Polyakov loop | `tests/test_su3_heatbath.cpp` |
+| 4D SU(3) plaquette `0.5943` at `β = 6.0` (published 0.594), `β_c(N_t = 4) ≈ 5.69` | `docs/math/su3_lattice.md` |
 | 4D SU(2) `β_c(N_t = 2) ≈ 1.88`, `β_c(N_t = 4) ≈ 2.30` | `docs/math/su2_deconfinement.md` (scan commands + figures) |
 
 **Phase 4 (round 3b) — Wilson loops, Creutz ratios, β-sweep driver.**

@@ -18,6 +18,7 @@ add_executable(LatticeQFTTests
     test_multilevel.cpp
     test_mesons.cpp
     test_polyakov.cpp
+    test_su3_heatbath.cpp
 )
 
 target_link_libraries(LatticeQFTTests PRIVATE

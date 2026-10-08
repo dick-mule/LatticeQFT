@@ -25,6 +25,8 @@
 #include "monte_carlo/schwinger_hmc.hpp"
 #include "observables/meson_correlators.hpp"
 #include "observables/polyakov.hpp"
+#include "monte_carlo/su3_heatbath.hpp"
+#include "models/su3.hpp"
 #include "monte_carlo/su2_heatbath.hpp"
 #include "monte_carlo/tuning.hpp"
 #include "monte_carlo/u1_heatbath.hpp"
@@ -42,7 +44,7 @@
 namespace
 {
 
-enum class Model { Ising, Phi4, U1, SU2, SchwingerQuenched, SchwingerHMC };
+enum class Model { Ising, Phi4, U1, SU2, SU3, SchwingerQuenched, SchwingerHMC };
 
 struct Cli
 {
@@ -107,6 +109,11 @@ void printUsage()
         "    [--beta-min B] [--beta-max B] [--beta-steps K] [--step-size S]\n"
         "    [--dim D]   (Dim ∈ {2, 3, 4}; default 3)\n"
         "    [--use-heatbath]   (Kennedy-Pendleton)\n"
+        "    [--nt N]           (L^(D-1) x N lattice; adds Polyakov-loop columns)\n"
+        "  su3-specific:\n"
+        "    [--beta-min B] [--beta-max B] [--beta-steps K] [--step-size S]\n"
+        "    [--dim D]   (Dim ∈ {2, 3, 4}; default 4)\n"
+        "    [--use-heatbath]   (Cabibbo-Marinari)   [--nt N]\n"
         "  schwinger-quenched / schwinger-hmc (2D only):\n"
         "    [--beta-min B] [--beta-max B] [--beta-steps K] [--step-size S]\n"
         "    [--mass M] [--n-sources K] [--cg-tol T]\n"
@@ -141,6 +148,7 @@ bool parseCli(int argc, char** argv, Cli& cli)
             else if (v == "phi4")               cli.model = Model::Phi4;
             else if (v == "u1")                 cli.model = Model::U1;
             else if (v == "su2")                { cli.model = Model::SU2; if (cli.dim == 2) cli.dim = 3; }
+            else if (v == "su3")                { cli.model = Model::SU3; if (cli.dim == 2) cli.dim = 4; }
             else if (v == "schwinger-quenched") cli.model = Model::SchwingerQuenched;
             else if (v == "schwinger-hmc")      cli.model = Model::SchwingerHMC;
             else { std::fprintf(stderr, "unknown model: %s\n", v.c_str()); return false; }
@@ -531,6 +539,102 @@ int runSU2Dim(const Cli& cli)
     return 0;
 }
 
+// -----------------------------------------------------------------------------
+// SU(3) pure gauge β-sweep: plaquette, small Wilson loops, Creutz ratio, and on an
+// asymmetric lattice (--nt) the modulus of the complex Polyakov loop.
+// -----------------------------------------------------------------------------
+
+template<int Dim>
+int runSU3Dim(const Cli& cli)
+{
+    using namespace lqft;
+    const bool finiteT = cli.nt > 0;
+    const int  t_axis  = Dim - 1;
+    typename Lattice<Dim>::Coord shape{};
+    for (int d = 0; d < Dim; ++d) shape[static_cast<std::size_t>(d)] = cli.L;
+    if (finiteT) shape[static_cast<std::size_t>(t_axis)] = cli.nt;
+    Lattice<Dim> lattice = finiteT ? Lattice<Dim>(shape) : Lattice<Dim>::cube(cli.L);
+    LinkField<su3::Element, Dim> field(lattice);
+    Rng rng(cli.seed);
+    su3_model::SU3Model<Dim>::hot(field, rng);
+    const double Vs = static_cast<double>(lattice.volume()) / static_cast<double>(finiteT ? cli.nt : cli.L);
+
+    std::fprintf(stderr, "[su3] %dD SU(3) pure gauge  L=%d  Nt=%d  V=%d  algo=%s  seed=%llu  therm=%d  measure=%d\n",
+        Dim, cli.L, finiteT ? cli.nt : cli.L, lattice.volume(),
+        cli.use_heatbath ? "heat-bath (Cabibbo-Marinari)" : "Metropolis",
+        (unsigned long long)cli.seed, cli.therm, cli.measure_sweeps);
+
+    std::printf("beta,plaq,plaq_err,W21,W21_err,W12,W12_err,W22,W22_err,creutz22,acceptance%s\n",
+                finiteT ? ",polyakov_abs,polyakov_abs_err,polyakov_chi,nt,ns" : "");
+
+    for (int k = 0; k < cli.beta_steps; ++k)
+    {
+        const double beta = cli.beta_min
+            + (cli.beta_max - cli.beta_min) * static_cast<double>(k)
+            / static_cast<double>(std::max(1, cli.beta_steps - 1));
+        const double init_step = (cli.step_size > 0.0) ? cli.step_size : 0.25;
+        su3_model::SU3Model<Dim> model(lattice, beta, init_step);
+        obs::Mean plaq, W21, W12, W22, polyAbs, polySq;
+        auto measure = [&]() {
+            plaq.add(su3_model::averagePlaquette(lattice, field));
+            W21 .add(su3_model::averageWilsonLoop(lattice, field, 0, 1, 2, 1));
+            W12 .add(su3_model::averageWilsonLoop(lattice, field, 0, 1, 1, 2));
+            W22 .add(su3_model::averageWilsonLoop(lattice, field, 0, 1, 2, 2));
+            if (finiteT)
+            {
+                const double P = std::abs(obs::averagePolyakovLoop(lattice, field, t_axis, cli.nt));
+                polyAbs.add(P); polySq.add(P * P);
+            }
+        };
+        double cumulative_acc = 1.0;
+        if (cli.use_heatbath)
+        {
+            su3_model::heatBathSweepN(model, field, rng, cli.therm);
+            for (int s = 0; s < cli.measure_sweeps; ++s)
+            {
+                su3_model::heatBathSweep(model, field, rng);
+                if ((s % cli.sample_every) == 0) measure();
+            }
+        }
+        else
+        {
+            mc::MetropolisSweep<su3_model::SU3Model<Dim>> sweeper(model);
+            sweeper.sweepN(field, rng, cli.therm);
+            for (int s = 0; s < cli.measure_sweeps; ++s)
+            {
+                sweeper.sweep(field, rng);
+                if ((s % cli.sample_every) == 0) measure();
+            }
+            cumulative_acc = sweeper.cumulativeAcceptance();
+        }
+        const double chi22 = su2_model::creutzRatio(W22.mean(), plaq.mean(), W12.mean(), W21.mean());
+        std::printf("%.5f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.4f",
+            beta, plaq.mean(), plaq.naiveStdErr(), W21.mean(), W21.naiveStdErr(),
+            W12.mean(), W12.naiveStdErr(), W22.mean(), W22.naiveStdErr(), chi22, cumulative_acc);
+        if (finiteT)
+        {
+            const double pa = polyAbs.mean();
+            std::printf(",%.6f,%.6f,%.6f,%d,%d", pa, polyAbs.naiveStdErr(), Vs * (polySq.mean() - pa * pa), cli.nt, cli.L);
+        }
+        std::printf("\n");
+        std::fflush(stdout);
+    }
+    return 0;
+}
+
+int runSU3(const Cli& cli)
+{
+    switch (cli.dim)
+    {
+        case 2: return runSU3Dim<2>(cli);
+        case 3: return runSU3Dim<3>(cli);
+        case 4: return runSU3Dim<4>(cli);
+        default:
+            std::fprintf(stderr, "SU(3): unsupported --dim %d (allowed: 2, 3, 4)\n", cli.dim);
+            return 1;
+    }
+}
+
 int runSU2(const Cli& cli)
 {
     switch (cli.dim)
@@ -729,6 +833,7 @@ int main(int argc, char** argv)
         case Model::Phi4:              return runPhi4(cli);
         case Model::U1:                return runU1(cli);
         case Model::SU2:               return runSU2(cli);
+        case Model::SU3:               return runSU3(cli);
         case Model::SchwingerQuenched: return runSchwingerQuenched(cli);
         case Model::SchwingerHMC:      return runSchwingerHMC(cli);
     }
