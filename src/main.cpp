@@ -24,6 +24,7 @@
 #include "monte_carlo/metropolis.hpp"
 #include "monte_carlo/schwinger_hmc.hpp"
 #include "observables/meson_correlators.hpp"
+#include "observables/polyakov.hpp"
 #include "monte_carlo/su2_heatbath.hpp"
 #include "monte_carlo/tuning.hpp"
 #include "monte_carlo/u1_heatbath.hpp"
@@ -47,6 +48,7 @@ struct Cli
 {
     Model         model          = Model::Ising;
     int           dim            = 2;        // only honored by --model u1 for now
+    int           nt             = 0;        // su2: temporal extent of an asymmetric L^(Dim-1) x Nt lattice (0 = cubic)
     int           L              = 32;
     std::uint64_t seed           = 1234567ull;
     int           therm          = 500;
@@ -145,6 +147,7 @@ bool parseCli(int argc, char** argv, Cli& cli)
         }
         else if (a == "--L")              { if (!needI(cli.L))               return false; }
         else if (a == "--dim")            { if (!needI(cli.dim))             return false; }
+        else if (a == "--nt")             { if (!needI(cli.nt))              return false; }
         else if (a == "--seed")           { if (!needU(cli.seed))            return false; }
         else if (a == "--therm")          { if (!needI(cli.therm))           return false; }
         else if (a == "--measure-sweeps") { if (!needI(cli.measure_sweeps))  return false; }
@@ -421,20 +424,29 @@ template<int Dim>
 int runSU2Dim(const Cli& cli)
 {
     using namespace lqft;
-    Lattice<Dim> lattice = Lattice<Dim>::cube(cli.L);
+    // --nt N makes the lattice L^(Dim-1) x N with the last axis as (periodic) time: the
+    // finite-temperature setting where the Polyakov loop is the deconfinement order parameter.
+    const bool finiteT = cli.nt > 0;
+    const int  t_axis  = Dim - 1;
+    typename Lattice<Dim>::Coord shape{};
+    for (int d = 0; d < Dim; ++d) shape[static_cast<std::size_t>(d)] = cli.L;
+    if (finiteT) shape[static_cast<std::size_t>(t_axis)] = cli.nt;
+    Lattice<Dim> lattice = finiteT ? Lattice<Dim>(shape) : Lattice<Dim>::cube(cli.L);
     LinkField<su2::Element, Dim> field(lattice);
     Rng rng(cli.seed);
     su2_model::SU2Model<Dim>::hot(field, rng);
+    const double Vs = static_cast<double>(lattice.volume()) / static_cast<double>(finiteT ? cli.nt : cli.L);
 
     std::fprintf(stderr,
-        "[su2] %dD SU(2) pure gauge  L=%d  V=%d  links/site=%d  plaq-planes/site=%d\n",
-        Dim, cli.L, lattice.volume(), Dim, Dim * (Dim - 1) / 2);
+        "[su2] %dD SU(2) pure gauge  L=%d  Nt=%d  V=%d  links/site=%d  plaq-planes/site=%d\n",
+        Dim, cli.L, finiteT ? cli.nt : cli.L, lattice.volume(), Dim, Dim * (Dim - 1) / 2);
     std::fprintf(stderr,
         "[su2] seed=%llu  therm=%d  measure=%d  algo=%s\n",
         (unsigned long long)cli.seed, cli.therm, cli.measure_sweeps,
         cli.use_heatbath ? "heat-bath (Kennedy-Pendleton)" : "Metropolis");
 
-    std::printf("beta,plaq,plaq_err,W21,W21_err,W12,W12_err,W22,W22_err,creutz22,acceptance\n");
+    std::printf("beta,plaq,plaq_err,W21,W21_err,W12,W12_err,W22,W22_err,creutz22,acceptance%s\n",
+                finiteT ? ",polyakov_abs,polyakov_abs_err,polyakov_chi,nt,ns" : "");
 
     for (int k = 0; k < cli.beta_steps; ++k)
     {
@@ -444,6 +456,12 @@ int runSU2Dim(const Cli& cli)
 
         const double init_step = (cli.step_size > 0.0) ? cli.step_size : 0.4;
         su2_model::SU2Model<Dim> model(lattice, beta, init_step);
+        obs::Mean polyAbs, polySq;
+        auto measurePolyakov = [&]() {
+            if (!finiteT) return;
+            const double P = obs::averagePolyakovLoop(lattice, field, t_axis, cli.nt);
+            polyAbs.add(std::abs(P)); polySq.add(P * P);
+        };
 
         // ---- Thermalize ----
         double cumulative_acc = 1.0;
@@ -470,6 +488,7 @@ int runSU2Dim(const Cli& cli)
                     W21 .add(su2_model::averageWilsonLoop(lattice, field, 0, 1, 2, 1));
                     W12 .add(su2_model::averageWilsonLoop(lattice, field, 0, 1, 1, 2));
                     W22 .add(su2_model::averageWilsonLoop(lattice, field, 0, 1, 2, 2));
+                    measurePolyakov();
                 }
             }
         }
@@ -485,6 +504,7 @@ int runSU2Dim(const Cli& cli)
                     W21 .add(su2_model::averageWilsonLoop(lattice, field, 0, 1, 2, 1));
                     W12 .add(su2_model::averageWilsonLoop(lattice, field, 0, 1, 1, 2));
                     W22 .add(su2_model::averageWilsonLoop(lattice, field, 0, 1, 2, 2));
+                    measurePolyakov();
                 }
             }
             cumulative_acc = sweeper.cumulativeAcceptance();
@@ -493,13 +513,19 @@ int runSU2Dim(const Cli& cli)
         const double chi22 = su2_model::creutzRatio(
             W22.mean(), plaq.mean(), W12.mean(), W21.mean());
 
-        std::printf("%.5f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.4f\n",
+        std::printf("%.5f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.4f",
             beta,
             plaq.mean(), plaq.naiveStdErr(),
             W21 .mean(), W21 .naiveStdErr(),
             W12 .mean(), W12 .naiveStdErr(),
             W22 .mean(), W22 .naiveStdErr(),
             chi22, cumulative_acc);
+        if (finiteT)
+        {
+            const double pa = polyAbs.mean();
+            std::printf(",%.6f,%.6f,%.6f,%d,%d", pa, polyAbs.naiveStdErr(), Vs * (polySq.mean() - pa * pa), cli.nt, cli.L);
+        }
+        std::printf("\n");
         std::fflush(stdout);
     }
     return 0;

@@ -15,9 +15,21 @@ import numpy as np
 
 p = argparse.ArgumentParser()
 p.add_argument('csv'); p.add_argument('--tmin', type=int, default=3); p.add_argument('--figdir', default='docs/figures')
+p.add_argument('--exclude', default='', help='comma list of beta:mass points to drop, e.g. 2:-0.4,2:-0.3')
+p.add_argument('--max-dh', type=float, default=0.5, help='drop points whose HMC <dH> exceeds this (from the _quality.csv side file)')
 a = p.parse_args()
 
 rows = list(csv.DictReader(open(a.csv)))
+bad = set()
+for item in [x for x in a.exclude.split(',') if x]:
+    b, m = item.split(':'); bad.add((round(float(b), 5), round(float(m), 5)))
+qfile = os.path.splitext(a.csv)[0] + '_quality.csv'
+if os.path.exists(qfile):
+    for r in csv.DictReader(open(qfile)):
+        if abs(float(r['avg_dH'])) > a.max_dh or float(r['acceptance']) < 0.6:
+            bad.add((round(float(r['beta']), 5), round(float(r['mass']), 5)))
+if bad: print('dropping (unstable HMC / excluded):', sorted(bad))
+rows = [r for r in rows if (round(float(r['beta']), 5), round(float(r['mass']), 5)) not in bad]
 pts = defaultdict(dict)   # (beta, mass) -> {t: (conn, err, disc, err, eta, err)}
 for r in rows:
     key = (float(r['beta']), float(r['mass'])); pts[key][int(r['t'])] = tuple(float(r[k]) for k in ('conn', 'conn_err', 'disc', 'disc_err', 'eta', 'eta_err'))
