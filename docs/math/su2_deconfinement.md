@@ -57,8 +57,14 @@ asymptotic area law) and the match is qualitative: the slope is the test, not th
 ## Results
 
 Heat-bath scans on `N_s³ × N_t` lattices, 4000 measurement sweeps per β after 500 for
-thermalisation, in steps of `Δβ = 0.025` around each transition (`data/su2_4d_nt*_fine_L*.csv`;
-the coarse `Δβ = 0.1` scans over `1.5 ≤ β ≤ 3.0` are `data/su2_4d_nt{2,4}.csv`).
+thermalisation, in steps of `Δβ = 0.025` around each transition. The scans are not checked in
+(`data/` is local); each one is a few minutes on a laptop and regenerates with
+
+    LatticeQFT --model su2 --dim 4 --L {8,12} --nt 2 --use-heatbath --beta-min 1.75 --beta-max 2.05 --beta-steps 13 --therm 500 --measure-sweeps 4000 --sample-every 2
+    LatticeQFT --model su2 --dim 4 --L {8,12} --nt 4 --use-heatbath --beta-min 2.15 --beta-max 2.45 --beta-steps 13 --therm 500 --measure-sweeps 4000 --sample-every 2
+    LatticeQFT --model su2 --dim 4 --L 8        --use-heatbath --beta-min 2.0  --beta-max 2.6  --beta-steps 13 --therm 500 --measure-sweeps 4000 --sample-every 2
+
+(seed 1234567, the driver default).
 
 | `N_t` | `N_s` | peak of `χ_P` at `β` | `χ_P` at peak | published `β_c` |
 |---|---|---|---|---|
@@ -84,7 +90,7 @@ equal; the 40% mismatch is the well-known scaling violation at `N_t = 2` (`a` is
 for two-loop running at `β ≈ 1.9`), and the numbers agree with the standard values quoted for
 these two lattices (about 30 and about 42).
 
-**Creutz ratio on symmetric lattices** (`data/su2_4d_sym_L8.csv`, `8⁴`, `2.0 ≤ β ≤ 2.6`):
+**Creutz ratio on symmetric lattices** (`8⁴`, `2.0 ≤ β ≤ 2.6`, the third command above):
 `χ(2,2)` falls from 0.60 to 0.19, with `d ln(σa²)/dβ = −2.1` against the two-loop
 `−5.0`. The `2×2` Creutz ratio therefore does **not** follow asymptotic scaling at these
 couplings: it still sits on the strong-to-weak crossover, and the small loop is dominated by

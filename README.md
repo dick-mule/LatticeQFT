@@ -77,8 +77,8 @@ hot loop small). Heat-bath scans at `N_s = 8, 12` put the susceptibility peak at
 for `N_t = 2` and `β = 2.300` for `N_t = 4` (published: 1.88 and 2.30), with the peak growing
 with volume as the 3D-Ising class requires. The companion asymptotic-scaling check shows that
 the `2×2` Creutz ratio on `8⁴` runs 2.5× slower than two-loop over `β = 2.0–2.6`, i.e. the
-small-loop string tension is not yet in the scaling window. Data in `data/su2_4d_*.csv`,
-figures in `docs/figures/`, note in
+small-loop string tension is not yet in the scaling window. Figures in `docs/figures/`,
+regeneration commands and the note in
 [`docs/math/su2_deconfinement.md`](docs/math/su2_deconfinement.md);
 `scripts/analyze_su2_deconfinement.py` reproduces the tables.
 
@@ -97,7 +97,7 @@ figures in `docs/figures/`, note in
 | Multilevel exact algebra, mean, variance | `tests/test_multilevel.cpp` |
 | Dense propagator `D D⁻¹ = 1`, γ⁵-Hermiticity, free-field two-fermion threshold | `tests/test_mesons.cpp` |
 | Polyakov loop: cold, cyclic, Z₂ centre flip, hot | `tests/test_polyakov.cpp` |
-| 4D SU(2) `β_c(N_t = 2) ≈ 1.88`, `β_c(N_t = 4) ≈ 2.30` | `data/su2_4d_nt*_fine_L*.csv`, `docs/math/su2_deconfinement.md` |
+| 4D SU(2) `β_c(N_t = 2) ≈ 1.88`, `β_c(N_t = 4) ≈ 2.30` | `docs/math/su2_deconfinement.md` (scan commands + figures) |
 
 **Phase 4 (round 3b) — Wilson loops, Creutz ratios, β-sweep driver.**
 `averageWilsonLoop(R, T)` for arbitrary rectangle, `creutzRatio` extracting
