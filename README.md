@@ -77,9 +77,11 @@ over all sources (`src/observables/meson_correlators.hpp`; `--corr-out` on `schw
 should stay at the Schwinger boson `e/√π` at the chiral point. Tests: `D D⁻¹ = 1` to 1e-10,
 γ⁵-Hermiticity of the inverse, free-field two-fermion threshold. The `(β, m)` grid
 (`scripts/run_schwinger_mass_grid.py`, `analyze_schwinger_mass.py`) locates the Wilson
-chiral point `m_c(β)` from `M_π² ∝ m − m_c` to ±0.002 at `β = 2, 3, 4`; the singlet mass is
-the hard part (a topological constant in the disconnected piece, and statistics), see
-[`docs/math/schwinger_mass_gap.md`](docs/math/schwinger_mass_gap.md) for where it stands.
+chiral point `m_c(β)` from `M_π² ∝ m − m_c` to ±0.001 at `β = 2, 3, 4`; the singlet mass is
+bracketed (0.48–0.73 in units of `e` against the exact 0.564) but not measured, because on
+`L_t = 16` a cosh plus the topological constant of the disconnected piece is degenerate with
+a lighter pure cosh; see [`docs/math/schwinger_mass_gap.md`](docs/math/schwinger_mass_gap.md)
+for the diagnosis and what the measurement needs.
 
 **Round 3p — 4D SU(2) deconfinement.** `--nt N` makes the `--model su2 --dim 4` driver run
 an `L³ × N` lattice and append the Polyakov loop `⟨|P̄|⟩`, its susceptibility
@@ -105,6 +107,18 @@ and the `N_t = 4` scan puts the first-order deconfinement jump at `β = 5.675–
 [`docs/math/su3_lattice.md`](docs/math/su3_lattice.md). The earlier "not yet on the CLI"
 remark under the SU(3) bullet above is superseded.
 
+**Round 3r — the scalar glueball.** `--glueball-out` on the 4D SU(2) driver measures the
+`0⁺⁺` correlator from APE-smeared spatial plaquettes (`src/observables/glueball.hpp`:
+zero-momentum slice operator, vacuum subtraction, blocked jackknife on `C(t)` and `m_eff`).
+On `12³ × 16` at `β = 2.5` with 16 smearing steps the effective mass plateaus at
+`m a = 0.75(6)` for `t ≥ 2`, against 0.65–0.70 from the published `m_{0⁺⁺}/T_c` and this
+project's own `β_c(N_t)`; the mass drops with `β` as it must and doubling the smearing is what
+exposes the plateau. Five tests. Note in [`docs/math/su2_glueball.md`](docs/math/su2_glueball.md).
+
+**Visualizer catch-up.** The Polyakov scene now reports the finite-volume order parameter
+`⟨|P̄|⟩` and its susceptibility `χ_P` next to `⟨P⟩`, the same quantities the CLI scans use to
+locate `β_c(N_t)`.
+
 ### Validation map
 
 | Analytic / numerical benchmark | Where it is checked |
@@ -120,6 +134,7 @@ remark under the SU(3) bullet above is superseded.
 | Multilevel exact algebra, mean, variance | `tests/test_multilevel.cpp` |
 | Dense propagator `D D⁻¹ = 1`, γ⁵-Hermiticity, free-field two-fermion threshold | `tests/test_mesons.cpp` |
 | Polyakov loop: cold, cyclic, Z₂ centre flip, hot | `tests/test_polyakov.cpp` |
+| Glueball operator: cold value, slice sum, periodicity, hot decorrelation, smearing mask | `tests/test_glueball.cpp` |
 | SU(3) heat-bath: projection inverts embedding, unitarity, `⟨P⟩ ≈ β/18`, Metropolis agreement, Z₃ on the Polyakov loop | `tests/test_su3_heatbath.cpp` |
 | 4D SU(3) plaquette `0.5943` at `β = 6.0` (published 0.594), `β_c(N_t = 4) ≈ 5.69` | `docs/math/su3_lattice.md` |
 | 4D SU(2) `β_c(N_t = 2) ≈ 1.88`, `β_c(N_t = 4) ≈ 2.30` | `docs/math/su2_deconfinement.md` (scan commands + figures) |

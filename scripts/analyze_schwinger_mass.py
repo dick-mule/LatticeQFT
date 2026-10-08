@@ -131,8 +131,8 @@ def wfit(x, y, dy):
     return sc[0], sc[1], cov
 
 results = {}
-print(f"{'beta':>5} {'mass':>6} {'M_pi fit':>8} {'+-':>6} {'M_pi plat':>8} {'+-':>6} {'M_eta fit':>8} {'+-':>6} {'chi2/d':>6} {'M_eta diff':>8} {'+-':>6}")
-print("(M_pi fit: cosh fit over t in [tmin, L-tmin]; plat: plateau of C(t)/C(t+1); M_eta fit: A cosh + constant; diff: from C(t)-C(t+1))")
+print(f"{'beta':>5} {'mass':>6} {'M_pi fit':>8} {'+-':>6} {'M_pi plat':>8} {'+-':>6} {'M_eta+B':>8} {'+-':>6} {'chi2/d':>6} {'M_eta B=0':>8} {'+-':>6} {'chi2/d':>6} {'M_eta diff':>8} {'+-':>6}")
+print("(M_pi fit: cosh fit over t in [tmin, L-tmin]; plat: plateau of C(t)/C(t+1); M_eta+B: A cosh + constant; B=0: pure cosh; diff: from C(t)-C(t+1))")
 for (beta, m), tab in sorted(pts.items()):
     ts = sorted(tab)
     conn = [tab[t][0] for t in ts]; econ = [tab[t][1] for t in ts]
@@ -141,9 +141,10 @@ for (beta, m), tab in sorted(pts.items()):
     Mpi, dMpi = plateau(conn, econ, a.tmin, t1)
     Mpi_f, dMpi_f, q_pi = coshfit(conn, econ, a.tmin, False)
     Meta, dMeta, q_eta = coshfit(eta, eeta, a.tmin, True)
+    Meta0, dMeta0, q_eta0 = coshfit(eta, eeta, a.tmin, False)
     Meta_d, dMeta_d = plateau(eta, eeta, a.tmin, t1, subtracted=True)
-    results[(beta, m)] = (Mpi_f, dMpi_f, Meta, dMeta)
-    print(f"{beta:5.2f} {m:6.2f} {Mpi_f:8.4f} {dMpi_f:6.4f} {Mpi:8.4f} {dMpi:6.4f} {Meta:8.4f} {dMeta:6.4f} {q_eta:6.2f} {Meta_d:8.4f} {dMeta_d:6.4f}")
+    results[(beta, m)] = (Mpi_f, dMpi_f, Meta, dMeta, Meta0, dMeta0)
+    print(f"{beta:5.2f} {m:6.2f} {Mpi_f:8.4f} {dMpi_f:6.4f} {Mpi:8.4f} {dMpi:6.4f} {Meta:8.4f} {dMeta:6.4f} {q_eta:6.2f} {Meta0:8.4f} {dMeta0:6.4f} {q_eta0:6.2f} {Meta_d:8.4f} {dMeta_d:6.4f}")
 
 # Per beta: chiral point from M_pi^2 vs m, then M_eta at m_c.
 print("\nper beta: chiral point and the Schwinger boson")
@@ -171,6 +172,23 @@ for beta in sorted({k[0] for k in results}):
     ea = 1.0 / math.sqrt(beta)
     summary.append((ea, Meta_c / ea, dMeta_c / ea))
     print(f"{beta:5.2f} {ea:6.3f} {m_c:7.3f}({dm_c:.3f}) {Meta_c:9.4f}({dMeta_c:.4f}) {Meta_c / ea:8.4f}({dMeta_c / ea:.4f}) {1 / math.sqrt(math.pi):6.4f}   branch m = {[float(x) for x in mm]}")
+
+print("\nsame, with the singlet fitted to a pure cosh (no constant):")
+for beta in sorted({k[0] for k in results}):
+    ms = sorted((k[1] for k in results if k[0] == beta and not math.isnan(results[k][0])), reverse=True)
+    branch = []
+    for m in ms:
+        if branch and results[(beta, m)][0] >= results[(beta, branch[-1])][0]: break
+        branch.append(m)
+    if len(branch) < 3: continue
+    mm = np.array(branch); Mpi = np.array([results[(beta, m)][0] for m in mm]); dMpi = np.array([results[(beta, m)][1] for m in mm])
+    s_, c_, cov = wfit(mm, Mpi ** 2, 2 * Mpi * dMpi); m_c = -c_ / s_
+    ok = np.array([not math.isnan(results[(beta, m)][4]) for m in mm])
+    if ok.sum() < 2: continue
+    Me = np.array([results[(beta, m)][4] for m in mm])[ok]; dMe = np.array([results[(beta, m)][5] for m in mm])[ok]
+    se, ce, cove = wfit(mm[ok], Me, dMe); Mc = se * m_c + ce; dMc = math.sqrt(max(0.0, m_c ** 2 * cove[0, 0] + cove[1, 1] + 2 * m_c * cove[0, 1]))
+    ea = 1.0 / math.sqrt(beta)
+    print(f"{beta:5.2f} {ea:6.3f} {m_c:7.3f} {Mc:9.4f}({dMc:.4f}) {Mc / ea:8.4f}({dMc / ea:.4f}) {1 / math.sqrt(math.pi):6.4f}")
 
 if len(summary) >= 2:
     ea = np.array([s[0] for s in summary]); ratio = np.array([s[1] for s in summary]); dratio = np.array([s[2] for s in summary])

@@ -25,6 +25,8 @@
 #include "monte_carlo/schwinger_hmc.hpp"
 #include "observables/meson_correlators.hpp"
 #include "observables/polyakov.hpp"
+#include "observables/glueball.hpp"
+#include "smearing/ape.hpp"
 #include "monte_carlo/su3_heatbath.hpp"
 #include "models/su3.hpp"
 #include "monte_carlo/su2_heatbath.hpp"
@@ -86,6 +88,9 @@ struct Cli
     // Meson correlators (schwinger-hmc): exact dense propagator per sample, time-sliced
     // pseudoscalar correlators (connected, disconnected, singlet) appended to this CSV.
     std::string corr_out;
+    std::string glueball_out;              // su2: write the 0++ glueball correlator (CSV) here
+    int         smear_n     = 8;           // APE steps on spatial links for the glueball operator
+    double      smear_alpha = 0.5;         // APE weight
 
     // Use U(1) heat-bath sweep instead of Metropolis (--model u1 / schwinger-quenched)
     bool   use_heatbath   = false;
@@ -110,6 +115,7 @@ void printUsage()
         "    [--dim D]   (Dim ∈ {2, 3, 4}; default 3)\n"
         "    [--use-heatbath]   (Kennedy-Pendleton)\n"
         "    [--nt N]           (L^(D-1) x N lattice; adds Polyakov-loop columns)\n"
+        "    [--glueball-out F] [--smear-n 8] [--smear-alpha 0.5]   (0++ correlator from APE-smeared spatial plaquettes)\n"
         "  su3-specific:\n"
         "    [--beta-min B] [--beta-max B] [--beta-steps K] [--step-size S]\n"
         "    [--dim D]   (Dim ∈ {2, 3, 4}; default 4)\n"
@@ -175,6 +181,9 @@ bool parseCli(int argc, char** argv, Cli& cli)
         else if (a == "--hmc-n-steps")    { if (!needI(cli.hmc_n_steps))     return false; }
         else if (a == "--use-heatbath")   { cli.use_heatbath = true; }
         else if (a == "--corr-out")       { if (i + 1 >= argc) return false; cli.corr_out = argv[++i]; }
+        else if (a == "--glueball-out")   { if (i + 1 >= argc) return false; cli.glueball_out = argv[++i]; }
+        else if (a == "--smear-n")        { if (!needI(cli.smear_n))         return false; }
+        else if (a == "--smear-alpha")    { if (!need(cli.smear_alpha))      return false; }
         else { std::fprintf(stderr, "unknown arg: %s\n", a.c_str()); return false; }
     }
     return true;
@@ -465,10 +474,26 @@ int runSU2Dim(const Cli& cli)
         const double init_step = (cli.step_size > 0.0) ? cli.step_size : 0.4;
         su2_model::SU2Model<Dim> model(lattice, beta, init_step);
         obs::Mean polyAbs, polySq;
+        const bool glue = !cli.glueball_out.empty();
+        std::vector<std::vector<double>> glueC;   // per-sample (1/N_t) sum_tau O(tau) O(tau+t)
+        std::vector<double>              glueO;   // per-sample slice mean of O
+        LinkField<su2::Element, Dim> smeared(lattice), scratch(lattice);
+        std::array<bool, Dim> spatial{};
+        for (int d = 0; d < Dim; ++d) spatial[static_cast<std::size_t>(d)] = (d != t_axis);
         auto measurePolyakov = [&]() {
-            if (!finiteT) return;
-            const double P = obs::averagePolyakovLoop(lattice, field, t_axis, cli.nt);
-            polyAbs.add(std::abs(P)); polySq.add(P * P);
+            if (finiteT)
+            {
+                const double P = obs::averagePolyakovLoop(lattice, field, t_axis, cli.nt);
+                polyAbs.add(std::abs(P)); polySq.add(P * P);
+            }
+            if (glue)
+            {
+                smeared = field;
+                smearing::apeSmearN<Dim>(lattice, smeared, scratch, cli.smear_alpha, cli.smear_n, spatial);
+                const auto O = obs::plaquetteSlices(lattice, smeared, t_axis);
+                double om = 0.0; for (double o : O) om += o; om /= static_cast<double>(O.size());
+                glueC.push_back(obs::sliceProducts(O)); glueO.push_back(om);
+            }
         };
 
         // ---- Thermalize ----
@@ -535,6 +560,47 @@ int runSU2Dim(const Cli& cli)
         }
         std::printf("\n");
         std::fflush(stdout);
+
+        if (glue && !glueC.empty())
+        {
+            // Vacuum-subtracted correlator with a blocked jackknife (block = 10 samples) for
+            // the errors on C(t) and on the effective mass.
+            const int Nt = static_cast<int>(glueC[0].size());
+            const int n  = static_cast<int>(glueC.size());
+            const int nb = std::max(2, n / 10);
+            const auto C = obs::connectedCorrelator(glueC, glueO);
+            std::vector<std::vector<double>> Cj;   // per-block leave-one-out correlators
+            for (int b = 0; b < nb; ++b)
+            {
+                std::vector<std::vector<double>> cc; std::vector<double> oo;
+                for (int s = 0; s < n; ++s)
+                    if ((s * nb) / n != b) { cc.push_back(glueC[static_cast<std::size_t>(s)]); oo.push_back(glueO[static_cast<std::size_t>(s)]); }
+                Cj.push_back(obs::connectedCorrelator(cc, oo));
+            }
+            static bool header = false;
+            FILE* f = std::fopen(cli.glueball_out.c_str(), header ? "a" : "w");
+            if (f)
+            {
+                if (!header) { std::fprintf(f, "beta,L,nt,smear_n,smear_alpha,t,C,C_err,meff,meff_err,n_samples\n"); header = true; }
+                for (int t = 0; t < Nt; ++t)
+                {
+                    const double m = obs::effectiveMassPeriodic(C[static_cast<std::size_t>(t)], C[static_cast<std::size_t>((t + 1) % Nt)], t, Nt);
+                    double vC = 0.0, vm = 0.0; int nm = 0;
+                    for (int b = 0; b < nb; ++b)
+                    {
+                        const double dC = Cj[static_cast<std::size_t>(b)][static_cast<std::size_t>(t)] - C[static_cast<std::size_t>(t)];
+                        vC += dC * dC;
+                        const double mj = obs::effectiveMassPeriodic(Cj[static_cast<std::size_t>(b)][static_cast<std::size_t>(t)], Cj[static_cast<std::size_t>(b)][static_cast<std::size_t>((t + 1) % Nt)], t, Nt);
+                        if (!std::isnan(mj) && !std::isnan(m)) { vm += (mj - m) * (mj - m); ++nm; }
+                    }
+                    const double fac = static_cast<double>(nb - 1) / static_cast<double>(nb);
+                    std::fprintf(f, "%.5f,%d,%d,%d,%.3f,%d,%.8g,%.3g,%.6f,%.6f,%d\n",
+                        beta, cli.L, finiteT ? cli.nt : cli.L, cli.smear_n, cli.smear_alpha, t,
+                        C[static_cast<std::size_t>(t)], std::sqrt(fac * vC), m, (nm > 0) ? std::sqrt(fac * vm) : std::nan(""), n);
+                }
+                std::fclose(f);
+            }
+        }
     }
     return 0;
 }

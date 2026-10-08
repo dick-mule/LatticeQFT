@@ -95,39 +95,44 @@ The analysis therefore fits the singlet correlator to `A cosh(M (t − L_t/2)) +
 model is linear in `(A, B)`. A difference correlator `C(t) − C(t+1)` removes the constant too
 and is printed for comparison, but it is far noisier.
 
-## Results — first pass (300 trajectories per point)
+## Results
 
 `L = 16`, `β ∈ {2, 3, 4, 6}`, `m ∈ {0.2, 0.1, 0.05, 0, −0.05, −0.1, −0.15, −0.2}`, 300 HMC
-trajectories per point after 150 of thermalisation, one measurement every four trajectories.
-Points with `⟨ΔH⟩ > 0.5` or acceptance below 60% (past the chiral point, where the Dirac
-operator goes near-singular) are dropped automatically.
+trajectories per point after 150 of thermalisation, one measurement every four trajectories;
+then 2400 trajectories (1200 measurements) at the three masses nearest the chiral point for
+`β = 2, 3, 4`. Points with `⟨ΔH⟩ > 0.5` or acceptance below 60% (past the chiral point, where
+the Dirac operator goes near-singular) are dropped automatically; `β = 6` is excluded by hand,
+see below.
 
 ![pion and singlet masses](../figures/schwinger_masses_vs_bare_mass.png)
 
-**The pion sector works.** `M_π` falls linearly in `M_π²` toward the chiral point and rises
-again past it (Wilson fermions: `M_π² ∝ |m − m_c|`), and the chiral point on the branch
-continuous with the heavy side is sharp:
+**The pion sector works.** `M_π²` is linear in `m` down to the chiral point and `M_π` rises
+again past it (Wilson fermions: `M_π² ∝ |m − m_c|`); on the branch continuous with the heavy
+side the chiral point is sharp: `m_c = −0.154(1), −0.108(1), −0.080(1)` at `β = 2, 3, 4`.
 
-| `β` | `e a` | `m_c` | `M_η(m_c) a` | `M_η / e` | exact |
-|---|---|---|---|---|---|
-| 2 | 0.707 | −0.162(2) | 0.40(4) | 0.57(6) | 0.564 |
-| 3 | 0.577 | −0.097(2) | 0.38(5) | 0.66(8) | 0.564 |
-| 4 | 0.500 | −0.063(1) | 0.38(3) | 0.76(7) | 0.564 |
-| 6 | 0.408 | −0.196(4) | 0.16(9) | 0.40(22) | 0.564 |
+**The singlet is bracketed, not measured.** The singlet mass at `m_c` depends on how the
+topological constant is treated, and `L_t = 16` cannot tell the two treatments apart:
 
-**The singlet does not yet give a continuum number.** The singlet mass at the chiral point
-carries 10–20% errors at 300 trajectories, and the `β = 6` row is not usable: `M_η a ≈ 0.23`
-expected against `L = 16` gives `M L ≈ 3.7`, the topological constant dominates `C_disc`, and
-the cosh-plus-constant fit is degenerate. A straight line through the four points lands at
-`M_η/e → 1.0 ± 0.2`, which is 1.9σ from `1/√π` and says nothing. The trend at `β = 2, 3, 4`
-(0.57, 0.66, 0.76, rising as `a` falls) is the opposite of what a clean `O(a)` approach to
-0.564 would look like and is most likely the constant/cosh degeneracy on a short lattice
-leaking into `M`.
+| `β` | `e a` | `M_η/e`, cosh + constant | `M_η/e`, pure cosh | exact |
+|---|---|---|---|---|
+| 2 | 0.707 | 0.569(26) | 0.539(9) | 0.564 |
+| 3 | 0.577 | 0.604(35) | 0.506(8) | 0.564 |
+| 4 | 0.500 | 0.729(41) | 0.482(6) | 0.564 |
 
-What the measurement needs, in order: (i) statistics, at least ten times more at the three or
-four masses closest to `m_c`; (ii) a longer time extent at `β ≥ 4` so that `M_η L_t ≳ 6` and
-the constant separates from the cosh; (iii) ideally the per-configuration subtraction of
-`L_s ℓ²` (or binning by topological charge) rather than a fitted constant. The dense propagator
-is the limiting cost (`O((2V)³)` per configuration); `L_t = 32` at `L_s = 16` is `1024³`, a few
-seconds per measurement, still feasible.
+At `β = 4`, `m = −0.05` the data between `t = 3` and `8` are fitted equally well (within the
+naive, uncorrelated errors) by `M = 0.45` with a constant that is 70% of `C(8)`, and by
+`M = 0.29` with no constant at all; the exact answer, `M a = 0.282`, is the second. The two
+columns move in opposite directions as `a` falls and bracket `1/√π` at every `β`, so a
+linear extrapolation of either column is meaningless (the constant-fit column lands at
+`1.0 ± 0.1`). Quoting one of them as a measurement would be dishonest.
 
+`β = 6` is out of reach on this lattice: `M_η a ≈ 0.23` expected against `L = 16` gives
+`M L ≈ 3.7`, the topological constant dominates `C_disc`, and the fit is degenerate.
+
+**What the measurement needs**, in order: (i) a longer time extent, `L_t ≥ 32` at `β ≥ 3`,
+so that the cosh has fallen by `e^{−9}` before the constant takes over and the two separate;
+(ii) the per-configuration subtraction of the zero mode `L_s ℓ²` (or binning by topological
+charge) instead of a fitted constant; (iii) correlated fits, since the uncorrelated `χ²` of
+0.01–0.06 per degree of freedom says the errors do not know about the `t`-correlations. The
+dense propagator is the cost: `L_t = 32` at `L_s = 16` is a `1024 × 1024` inverse, a few
+seconds per configuration, feasible. The pion chiral points above are the reusable output.

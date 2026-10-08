@@ -119,6 +119,8 @@ private:
     // Accumulators
     long long                                    m_n_measurements = 0;
     double                                       m_sum_p_global   = 0.0;
+    double                                       m_sum_p_abs      = 0.0;   // Σ |P̄|  (finite-volume order parameter)
+    double                                       m_sum_p_sq       = 0.0;   // Σ P̄²   (for χ_P)
     std::vector<double>                          m_sum_C;     // L²: C(Δx, Δy)
     mutable std::vector<double>                  m_p_field;   // L² scratch
 

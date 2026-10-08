@@ -73,6 +73,8 @@ void PolyakovScene::resetStats()
 {
     m_n_measurements = 0;
     m_sum_p_global   = 0.0;
+    m_sum_p_abs      = 0.0;
+    m_sum_p_sq       = 0.0;
     std::fill(m_sum_C.begin(), m_sum_C.end(), 0.0);
     m_frames_since_measure = 0;
 }
@@ -162,7 +164,10 @@ void PolyakovScene::measurePolyakov()
                     m_sum_C[static_cast<std::size_t>(dy * L + dx)] += p0 * p1;
                 }
         }
-    m_sum_p_global += sum_p / static_cast<double>(L * L);
+    const double p_bar = sum_p / static_cast<double>(L * L);
+    m_sum_p_global += p_bar;
+    m_sum_p_abs    += std::abs(p_bar);
+    m_sum_p_sq     += p_bar * p_bar;
     ++m_n_measurements;
 }
 
@@ -345,6 +350,16 @@ bool PolyakovScene::buildControlsUI()
         const double p_mean = m_sum_p_global * inv_N;
         ImGui::Text("⟨P⟩ = %+.5f   (Z₂-symmetric ⟹ 0 in confined phase)",
                     p_mean);
+        // Finite-volume order parameter and its susceptibility, as in the 4D
+        // deconfinement scans of the CLI (--nt): the symmetric phase tunnels between
+        // the two Z₂ sectors, so ⟨P̄⟩ averages to zero while ⟨|P̄|⟩ ~ 1/√V; in the
+        // deconfined phase ⟨|P̄|⟩ is O(1) and χ_P peaks at β_c(N_t).
+        const double p_abs = m_sum_p_abs * inv_N;
+        const double chi_P = static_cast<double>(m_L * m_L) * (m_sum_p_sq * inv_N - p_abs * p_abs);
+        ImGui::Text("⟨|P̄|⟩ = %.5f   χ_P = V₂(⟨P̄²⟩ − ⟨|P̄|⟩²) = %.4f", p_abs, chi_P);
+        ImGui::TextDisabled(
+            "⟨|P̄|⟩ ~ 1/√V₂ confined, O(1) deconfined; χ_P peaks at β_c(N_t).\n"
+            "Here N_t = L (cold, confined). The 4D scans live in the CLI (--nt).");
 
         // Print V(R) = −(1/L_t) log C(R) along R = (R, 0) for R ∈ [1, L/2].
         ImGui::TextDisabled("Static potential V(R) along (R, 0):");
