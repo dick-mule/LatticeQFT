@@ -30,6 +30,59 @@ correlators).
 
 ## Current phase
 
+**Phase 4 / 5 (rounds 3j–3n) — infrastructure beyond the SU(2) flux tube.** The rounds
+after 3i were never written up; this entry catches the README up with the tree.
+
+- **SU(3) pure gauge** (`src/math/su3.hpp`, `src/models/su3.hpp`): 3×3 complex link
+  variables, Wilson action `S = β Σ_□ (1 − ⅓ Re tr U_□)`, unitarity re-projection against
+  round-off drift, and a single-link Metropolis whose proposal is a near-identity SU(2)
+  rotation embedded in one of the three Cabibbo–Marinari sub-groups (symmetric, so plain
+  Metropolis acceptance holds). Twelve tests: group algebra, `U U† = I` after projection,
+  `ΔS` against a direct recompute, cold and random limits. Not yet on the CLI; the SU(3)
+  heat-bath and 4D plaquette benchmarks are the next round.
+- **Link smearing** (`src/smearing/ape.hpp`, `stout.hpp`): APE (Albanese–Petronzio,
+  re-projected) and stout (Morningstar–Peardon, analytic) smearing for SU(2), with a
+  direction mask so temporal links can be left alone for transfer-matrix observables.
+  Tests: SU(2) preserved, cold configuration is a fixed point, thermalized action drops,
+  `ρ = 0` is the identity.
+- **Lanczos + deflated CG** (`src/solvers/lanczos.hpp`, `deflation.hpp`): symmetric Lanczos
+  with full re-orthogonalisation and a tridiagonal eigensolver give Ritz pairs of `D†D`;
+  deflated CG starts from the projected solution `x₀ = V (V†AV)⁻¹ V†b`, whose residual is
+  exactly orthogonal to the basis, and converges on the spectrum above the deflated modes.
+  Tests: diagonal operators, Ritz pairs of the Wilson–Dirac operator are eigenpairs, deflated
+  CG matches vanilla CG and uses fewer iterations.
+- **Lüscher–Weisz multilevel Wilson loops** (`src/monte_carlo/multilevel_wilson.hpp`): the
+  temporal extent is cut into slabs whose interiors are sub-sampled with the boundary spatial
+  links frozen; slab tensors in the doubled colour-index space compose by 4×4 products. Tests:
+  the slab algebra reproduces the loop exactly at `N_sub = 1`, the mean agrees with standard
+  sampling, the per-measurement variance is smaller. A bias was found and fixed in this round:
+  the constrained sweep updated spatial links outside its slab, which moved the closing line
+  an earlier slab's tensor had been conditioned on (27% low on `⟨W(2,2)⟩` at `β = 5`).
+- **Polyakov-loop correlator scene** (tenth visualizer scene): `P(x,y) = ½ tr ∏ₜ U_ẑ`, the
+  translation-averaged correlator `C(Δ) = ⟨P(0)P(Δ)⟩ − ⟨P⟩²`, and the static potential
+  `V(R) = −(1/L_t) log C(R)` on a 16³ lattice — the area-law-free route to the string tension.
+- **GPU pseudofermion HMC** (`gpu_wilson_dirac_2d.cpp`, `gpu_cg_2d.cpp`,
+  `gpu_schwinger_force.cpp`): the Wilson–Dirac operator, the CG solve and the gauge +
+  fermion force run as compute shaders; the Schwinger HMC scene toggles GPU/CPU and the GPU
+  path self-validates against the CPU force (relative L² error reported). The "CPU only"
+  remark under round 3i below is superseded.
+- **CI**: a CPU-only GitHub Actions job builds the core and runs the full test suite on every
+  push (the Vulkan visualizer needs a GPU and is built locally).
+
+### Validation map
+
+| Analytic / numerical benchmark | Where it is checked |
+|---|---|
+| Onsager critical point `β_c = ½ ln(1+√2)` | `tests/test_ising.cpp` |
+| Free Klein–Gordon propagator (`λ = 0`) | `tests/test_phi4.cpp` |
+| 2D U(1) Bessel ratio `⟨cos θ_□⟩ = I₁(β)/I₀(β)`, gauge invariance | `tests/test_u1.cpp` |
+| Wilson–Dirac γ⁵-Hermiticity, CG residual, force vs finite difference, `⟨ΔH⟩`, trace identity | `tests/test_dirac_2d.cpp`, `test_cg.cpp`, `test_hmc.cpp`, `test_schwinger.cpp` |
+| SU(2): `U U† = I`, exact `ΔS`, gauge invariance under random `Ω(x)`, strong/weak plaquette, `W(2,1) = W(1,2)` | `tests/test_su2.cpp` |
+| SU(3) algebra and limits | `tests/test_su3.cpp` |
+| Smearing fixed points and masks | `tests/test_ape.cpp`, `test_stout.cpp` |
+| Ritz pairs, deflated vs vanilla CG | `tests/test_deflation.cpp` |
+| Multilevel exact algebra, mean, variance | `tests/test_multilevel.cpp` |
+
 **Phase 4 (round 3b) — Wilson loops, Creutz ratios, β-sweep driver.**
 `averageWilsonLoop(R, T)` for arbitrary rectangle, `creutzRatio` extracting
 the string-tension estimator `σ ≈ −log[W(R,T)·W(R−1,T−1)/(W(R−1,T)·W(R,T−1))]`
@@ -83,9 +136,8 @@ the menu:
   gauge action density; readout shows running `⟨ψ̄ψ⟩(β, m)`.
 - **2D Schwinger (dynamical HMC)** — full pseudofermion HMC on a 10²
   lattice via the existing `SchwingerProvider` + `GaugeHMC` engines.
-  CPU only — porting the fermion force (which requires a CG solve per
-  leapfrog step) to GPU is its own multi-turn project. Live readouts
-  of acceptance, ⟨ΔH⟩, condensate.
+  Live readouts of acceptance, ⟨ΔH⟩, condensate. (Originally CPU only;
+  the GPU fermion force landed in a later round, see the top of this section.)
 
 Menu now ships **nine scenes** covering every CLI model. All gauge and
 spin/scalar scenes have a GPU/CPU toggle.
